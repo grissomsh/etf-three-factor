@@ -27,18 +27,16 @@ v6.1 → v7 升级（数据源替换）：
   - 自动回补历史数据（JSON历史不足60天时触发）
 
 使用方式：
-  python3 etf_v6_threefactor.py                # 默认：最近交易日
-  python3 etf_v6_threefactor.py --date 2026-04-30  # 指定日期
-  python3 etf_v6_threefactor.py --send           # 发送邮件
-  python3 etf_v6_threefactor.py --record         # 仅采集份额数据入库
-  python3 etf_v6_threefactor.py --stats          # 查看DB状态
+  python3 etf_v7_threefactor.py                # 默认：最近交易日
+  python3 etf_v7_threefactor.py --date 2026-04-30  # 指定日期
+  python3 etf_v7_threefactor.py --record         # 仅采集份额数据入库
+  python3 etf_v7_threefactor.py --stats          # 查看DB状态
+  python3 etf_v7_threefactor.py --healthcheck    # 环境健康检查
+  python3 etf_v7_threefactor.py --backfill       # 一次性回补份额历史
+  python3 etf_v7_threefactor.py --query --days 7 # 查询DB历史信号
 """
 
-import json, urllib.request, ssl, os, sys, math, argparse, smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
+import json, urllib.request, ssl, os, sys, math, argparse
 from datetime import datetime, timedelta
 
 # ---------- 本地数据存储模块 ----------
@@ -63,13 +61,6 @@ JSON_OUT = os.path.join(WORKSPACE, "ETF国家队监测-终版.json")
 SHARES_OUT = os.path.join(WORKSPACE, "etf_shares_history.json")
 THREE_FACTOR_OUT = os.path.join(WORKSPACE, "ETF三因子分析-v7.json")
 THREE_FACTOR_HTML = os.path.join(WORKSPACE, "ETF三因子分析-v7.html")
-
-# ---------- 邮件配置（支持自定义） ----------
-# 发件邮箱/收件邮箱：从环境变量读取，默认留空（用户需配置）
-EMAIL_TO   = os.environ.get("ETF_EMAIL_TO",   "YOUR_EMAIL@qq.com")
-EMAIL_FROM = os.environ.get("ETF_EMAIL_FROM", "YOUR_EMAIL@qq.com")
-SMTP_HOST  = os.environ.get("ETF_SMTP_HOST",  "smtp.qq.com")
-SMTP_PORT  = int(os.environ.get("ETF_SMTP_PORT", "465"))
 
 ETFS = {
     "510300": {"n": "华泰柏瑞沪深300ETF", "idx": "沪深300", "p": 5},
@@ -334,6 +325,13 @@ def save_shares_history(history):
         json.dump(history, f, ensure_ascii=False, indent=2)
 
 
+def _persist_shares(store, shares_history):
+    """份额双写持久化: JSON(兼容备份, 60天裁剪) + SQLite shares_raw(全量原始)"""
+    save_shares_history(shares_history)
+    if store:
+        store.upsert_shares_bulk(shares_history)
+
+
 def get_historical_share(code, target_date, history):
     """从历史记录中查找目标日期的份额数据，返回 (share_yi, prev_share_yi, delta_yi, delta_pct)"""
     if target_date in history and isinstance(history[target_date], dict) and code in history[target_date]:
@@ -372,22 +370,22 @@ def vprob(r):
     return min(100, 98 + (r - 5) / 5 * 2)
 
 
-def dprob(chg, t5_etf, t5_idx, vr, idx_chg):
-    """方向概率（原权重30%→现20%）"""
+def _dprob_parts(chg, t5_etf, t5_idx, vr, idx_chg):
+    """方向概率四维分值分解 (f1~f4 + 普涨折扣), 供报告展示支撑数据"""
     rally_discount = 1.0
     if idx_chg > 2.0: rally_discount = 0.60
     elif idx_chg > 1.5: rally_discount = 0.70
     elif idx_chg > 1.0: rally_discount = 0.80
     elif idx_chg > 0.5: rally_discount = 0.90
 
+    # 注: 普涨环境的降级由函数末尾的 rally_discount 统一处理,
+    #     f1 内部不再单独扣减, 避免双重计扣
     if chg > 0.3 and t5_idx < -1:      f1 = 95
     elif chg > 0 and t5_idx < -0.5:     f1 = 85
     elif chg > 0 and t5_idx < 0:        f1 = 70
     elif abs(chg) < 0.15 and t5_idx < -1: f1 = 80
     elif abs(chg) < 0.3 and t5_idx < -0.5: f1 = 65
-    elif chg > 1 and vr > 1.5 and idx_chg > 1: f1 = 25
     elif chg > 1 and vr > 1.5:          f1 = 45
-    elif chg > 0.5 and vr > 1.3 and idx_chg > 1: f1 = 35
     elif chg > 0.5 and vr > 1.3:        f1 = 50
     elif chg > 0:                       f1 = 40
     elif chg < -1.5 and vr > 2:         f1 = 8
@@ -415,6 +413,12 @@ def dprob(chg, t5_etf, t5_idx, vr, idx_chg):
     else:               f3 = 10
     f4 = 35
 
+    return f1, f2, f3, f4, rally_discount
+
+
+def dprob(chg, t5_etf, t5_idx, vr, idx_chg):
+    """方向概率（原权重30%→现20%）"""
+    f1, f2, f3, f4, rally_discount = _dprob_parts(chg, t5_etf, t5_idx, vr, idx_chg)
     raw = f1 * 0.4 + f2 * 0.3 + f3 * 0.2 + f4 * 0.1
     return round(raw * rally_discount, 1)
 
@@ -422,29 +426,31 @@ def dprob(chg, t5_etf, t5_idx, vr, idx_chg):
 def sprob(share_delta_pct):
     """
     份额概率（权重30%）【v6新增】
-    基于日份额变化 / 20日均份额（近似用日变化比）
-    
-    份额变动比 → 份额概率：
-      >10% → 95%  |  >5% → 80%  |  >3% → 65%  |  >1% → 45%
-      0-1% → 30%  |  < -1% → 15% |  < -5% → 5%  
+    基于日份额变化 / 前日份额
+
+    份额变动比 → 份额概率（连续分段，0% 处为近中性 15 分）：
+      >10% → 95      |  5~10% → 80~95  |  3~5% → 65~80  |  1~3% → 45~65
+      0~1% → 15~45   |  -1~0% → 10~15  |  -5~-1% → 5~10 |  <-5% → 0~5
+    映射整体偏向申购（模型只识别增持，减持信号见 etf_model.md 局限性）
     """
     if share_delta_pct is None:
         return None  # 数据不可用
-    ap = abs(share_delta_pct)
-    if share_delta_pct > 10:   return 95
-    elif share_delta_pct > 5:  return 80 + (share_delta_pct - 5) / 5 * 15
-    elif share_delta_pct > 3:  return 65 + (share_delta_pct - 3) / 2 * 15
-    elif share_delta_pct > 1:  return 45 + (share_delta_pct - 1) / 2 * 20
-    elif share_delta_pct > 0:  return 30 + share_delta_pct / 1 * 15
-    elif share_delta_pct > -1:  return 15 + (share_delta_pct + 1) / 1 * 15
-    elif share_delta_pct > -5:  return 5 + (share_delta_pct + 5) / 4 * 10
+    if share_delta_pct > 10:    return 95
+    elif share_delta_pct > 5:   return 80 + (share_delta_pct - 5) / 5 * 15
+    elif share_delta_pct > 3:   return 65 + (share_delta_pct - 3) / 2 * 15
+    elif share_delta_pct > 1:   return 45 + (share_delta_pct - 1) / 2 * 20
+    elif share_delta_pct > 0:   return 15 + share_delta_pct * 30
+    elif share_delta_pct > -1:  return 10 + (share_delta_pct + 1) * 5
+    elif share_delta_pct > -5:  return 5 + (share_delta_pct + 5) / 4 * 5
     else:                       return max(0, 5 + (share_delta_pct + 5) / 5 * 5)
 
 
-def analyze_all(data, idx_d, shares_map, target_date, days=35):
+def analyze_all(data, idx_d, shares_map, target_date, code, days=35):
     """
     三因子模型分析
     shares_map: {code: {date: {shares_yi, prev_shares_yi, delta_yi, delta_pct}}}
+    code: 当前分析的ETF代码 (必填) — 份额因子用该ETF自身的份额变化,
+          不传会静默退化为二因子(历史bug: 所有ETF都用了510300的份额)
     """
     if len(data) < 22: return []
     res = []
@@ -471,17 +477,12 @@ def analyze_all(data, idx_d, shares_map, target_date, days=35):
         vp = vprob(vr)
         dp = dprob(chg, t5, round(t5i, 2), vr, idchg)
 
-        # 三因子：份额概率
-        code_key = None
-        for ck in shares_map:
-            if d["date"] in shares_map[ck]:
-                code_key = ck
-                break
+        # 三因子：份额概率 (每只ETF用其自身的份额变化)
         sp = None
         share_delta_pct = None
         share_delta_yi = None
-        if code_key and d["date"] in shares_map[code_key]:
-            info = shares_map[code_key][d["date"]]
+        info = shares_map.get(code, {}).get(d["date"])
+        if info:
             share_delta_pct = info.get("delta_pct")
             share_delta_yi = info.get("delta_yi")
             sp = sprob(share_delta_pct)
@@ -513,378 +514,431 @@ def align_idx(data, idx_d):
 
 
 # ============================================================
-# HTML 报告生成（三因子版）
+# HTML 报告生成（每ETF独立卡片 + 交互明细）
 # ============================================================
 
-def gen_html(all_hist, latest_map, idx_300_data, shares_data, target_date):
+def _sprob_band(pct):
+    """份额变动比 → 所属区间名 (报告支撑数据展示用)"""
+    if pct > 10:  return ">10% 大规模申购段"
+    if pct > 5:   return "5~10% 较大申购段"
+    if pct > 3:   return "3~5% 中等申购段"
+    if pct > 1:   return "1~3% 小幅申购段"
+    if pct > 0:   return "0~1% 常规申购段"
+    if pct > -1:  return "-1~0% 轻微赎回段"
+    if pct > -5:  return "-5~-1% 赎回段"
+    return "<-5% 大幅赎回段"
+
+
+def _factor_bar(label, val, color):
+    """三因子概率条 (卡片内)"""
+    if val is None:
+        # 因子不可用(如二因子退化日): 显示 — 而非误导性的 0%
+        return (f'<div class="fbar"><span>{label}</span>'
+                f'<div class="ftrack"><div class="ffill" style="width:2%;background:{color}"></div></div>'
+                f'<b>–</b></div>')
+    return (f'<div class="fbar"><span>{label}</span>'
+            f'<div class="ftrack"><div class="ffill" style="width:{max(2, min(100, val)):.0f}%;background:{color}"></div></div>'
+            f'<b>{val:.0f}%</b></div>')
+
+
+def _sparkline(hist, width=560, height=56):
+    """cp 历史趋势 sparkline (纯内联SVG, 信号日用刻度线标记)"""
+    if not hist:
+        return ""
+    pts = [h["cp"] for h in hist]
+    n = len(pts)
+    def x(i): return 4 + i * (width - 8) / max(1, n - 1)
+    def y(v): return height - 6 - v / 100 * (height - 12)
+    l70 = (f'<line x1="4" y1="{y(70):.1f}" x2="{width-4}" y2="{y(70):.1f}" '
+           f'stroke="#ef4444" stroke-width="1" stroke-dasharray="4 4" opacity="0.4"/>')
+    l50 = (f'<line x1="4" y1="{y(50):.1f}" x2="{width-4}" y2="{y(50):.1f}" '
+           f'stroke="#f59e0b" stroke-width="1" stroke-dasharray="4 4" opacity="0.3"/>')
+    poly = " ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in enumerate(pts))
+    ticks = ""
+    for i, h in enumerate(hist):
+        c = h["cp"]
+        if c >= 50:
+            color = "#ef4444" if c >= 70 else "#f59e0b"
+            ticks += (f'<line x1="{x(i):.1f}" y1="{y(c)-3:.1f}" x2="{x(i):.1f}" y2="{y(c)+3:.1f}" '
+                      f'stroke="{color}" stroke-width="2"><title>{h["d"]} CP{c:.0f}%</title></line>')
+    last = pts[-1]
+    txt = (f'<text x="{x(n-1):.1f}" y="{max(8, y(last)-4):.1f}" font-size="9" '
+           f'fill="#7dd3fc" text-anchor="end">{last:.0f}%</text>')
+    return (f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none">'
+            f'{l70}{l50}<polyline points="{poly}" fill="none" stroke="#38bdf8" stroke-width="1.5"/>'
+            f'{ticks}{txt}</svg>')
+
+
+def gen_html(all_hist, shares_data, target_date):
+    """生成每ETF独立卡片的交互式HTML报告 (点击卡片展开支撑数据)"""
     dates = set()
     for hh in all_hist.values():
         for h in hh:
             dates.add(h["d"])
     dates = sorted(dates)
-    primary_date = target_date if target_date in dates else dates[-1]
+    primary_date = target_date if target_date in dates else (dates[-1] if dates else (target_date or ""))
 
-    primary = {}
-    high_codes = []
-    mid_codes = []
-    for code, hist in all_hist.items():
-        for h in hist:
-            if h["d"] == primary_date:
-                primary[code] = h
-                if h["cp"] >= 70: high_codes.append(code)
-                elif h["cp"] >= 50: mid_codes.append(code)
-                break
-
-    hs300_codes = [c for c in ETFS if ETFS[c]["idx"] == "沪深300"]
-    hs300_alerts = sum(1 for c in hs300_codes if c in primary and primary[c]["cp"] >= 50)
-    total_high = len(high_codes)
-    total_mid = len(mid_codes)
-
-    idx_300_hist = {}
-    if idx_300_data:
-        for d in idx_300_data:
-            idx_300_hist[d["date"]] = d
-    idx_gain = 0
-    if primary_date in idx_300_hist:
-        pd = idx_300_hist[primary_date]
-        prev_d = dates.index(primary_date) > 0 and dates[dates.index(primary_date) - 1]
-        if prev_d and prev_d in idx_300_hist:
-            pp = idx_300_hist[prev_d]
-            idx_gain = round((pd["c"] - pp["c"]) / pp["c"] * 100, 2)
-
-    avg_dp = 0
-    dp_count = 0
-    for code in primary:
-        avg_dp += primary[code]["dp"]
-        dp_count += 1
-    avg_dp = avg_dp / dp_count if dp_count > 0 else 0
-
-    # 份额数据汇总
-    net_purchase_total = 0
-    net_redempt_total = 0
-    shares_available_count = 0
-    for code, sd in shares_data.items():
-        d = sd.get("delta_yi")
-        if d is not None:
-            if d > 0: net_purchase_total += d
-            else: net_redempt_total += abs(d)
-            shares_available_count += 1
-
-    # 三因子模型标识
-    threef_tag = "三因子: 量能50%+方向20%+份额30%"
-    if shares_available_count == 0:
-        threef_tag += " (份额数据不可回溯，退化为二因子70/30)"
-
-    # 综合判断
-    if total_high >= 2 and hs300_alerts >= 3:
-        if idx_gain > 1.0 and avg_dp < 40:
-            verdict = f"⚠️ 多ETF放量高确信({total_high}只)，但{primary_date}大盘涨{idx_gain:+.2f}%。普涨环境下放量未必国家队专属。{threef_tag}。份额端：{'+' if net_purchase_total > net_redempt_total else ''}{net_purchase_total:.1f}亿净申购/{net_redempt_total:.1f}亿净赎回。"
-            vcls = "warn"
-        elif idx_gain > 1.5:
-            verdict = f"⚠️ 多ETF放量高确信，但{primary_date}大盘涨{idx_gain:+.2f}%。{threef_tag}。份额端：{'+' if net_purchase_total > net_redempt_total else ''}{net_purchase_total:.1f}亿净申购/{net_redempt_total:.1f}亿净赎回。"
-            vcls = "warn"
-        else:
-            verdict = f"🔥 {total_high}只ETF高确信·{hs300_alerts}/4沪深300同步。{threef_tag}。份额端：{'+' if net_purchase_total > net_redempt_total else ''}{net_purchase_total:.1f}亿净申购/{net_redempt_total:.1f}亿净赎回。"
-            vcls = "warn"
-    elif total_high >= 1:
-        verdict = f"⚠️ 部分ETF触发高确信（{', '.join(ETFS[c]['n'][:6] for c in high_codes)}等）。{threef_tag}。份额端：{'+' if net_purchase_total > net_redempt_total else ''}{net_purchase_total:.1f}亿净申购/{net_redempt_total:.1f}亿净赎回。"
-        vcls = "warn"
-    elif total_mid >= 2:
-        verdict = f"📊 {total_mid}只中等信号。{threef_tag}。份额端：{'+' if net_purchase_total > net_redempt_total else ''}{net_purchase_total:.1f}亿净申购/{net_redempt_total:.1f}亿净赎回。"
-        vcls = "mid"
+    # 数据状态徽章（盘中 vs 收盘后）
+    now_ymd = datetime.now().strftime("%Y-%m-%d")
+    now_hm = datetime.now().strftime("%H:%M")
+    shares_available = sum(1 for sd in shares_data.values() if sd.get("shares_yi") is not None)
+    if primary_date == now_ymd and now_hm < "15:30":
+        status_txt = "⚠️ 盘中运行：K线为实时累计值，当日信号不可靠"
+        status_cls = "warn"
+    elif shares_available == 0:
+        status_txt = "⚠️ 份额未发布（盘后约19:00更新）：份额因子不可用，信号为二因子"
+        status_cls = "warn"
     else:
-        verdict = f"✅ {primary_date} 全市场正常。{threef_tag}。"
-        if shares_available_count == 0:
-            verdict += " 份额数据不可回溯"
+        status_txt = "✅ 收盘后完整数据：量价+份额均已发布，信号可信"
+        status_cls = "ok"
 
-    # 15日信号趋势
-    date_score = {}
-    for code, hist in all_hist.items():
-        for h in hist:
-            d = h["d"]
-            if d not in date_score:
-                date_score[d] = {"cnt": 0, "high": 0, "mid": 0, "avg": 0}
-            date_score[d]["cnt"] += 1
-            date_score[d]["avg"] += h["cp"]
-            if h["cp"] >= 70: date_score[d]["high"] += 1
-            elif h["cp"] >= 50: date_score[d]["mid"] += 1
-    for d in date_score:
-        date_score[d]["avg"] = round(date_score[d]["avg"] / date_score[d]["cnt"], 1)
-    date_score[d]["total"] = date_score[d]["high"] * 2 + date_score[d]["mid"]
-
-    trend_dates = sorted(date_score.keys())[-15:]
-    bars = ""
-    for d in trend_dates:
-        ds = date_score[d]
-        h = min(42, max(3, ds["avg"] * 0.55))
-        if ds["high"] >= 2: cls = "bar-hi"
-        elif ds["high"] + ds["mid"] >= 2: cls = "bar-md"
-        elif ds["mid"] >= 2: cls = "bar-md"
-        else: cls = "bar-lo"
-        tag = SPECIAL.get(d, "")
-        tl = f"{d} {tag}" if tag else d
-        bars += f'<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px"><div class="bar {cls}" style="height:{h}px" title="{tl}: {ds["high"]}高+{ds["mid"]}中 CP均{ds["avg"]:.0f}%"></div><span style="font-size:8px;color:#4a5568">{d[5:]}</span></div>'
-
-    # ETF表格行
-    rows = ""
+    cards = ""
     for code, info in ETFS.items():
-        p = primary.get(code)
+        hist = [h for h in all_hist.get(code, []) if h["d"] <= primary_date]
+        if not hist:
+            cards += (f'<div class="card"><div class="c-title"><b>{info["n"]}</b>'
+                      f'<span class="code">{code}</span></div>'
+                      f'<div class="c-action lo">❌ 数据获取失败，无分析结果</div></div>')
+            continue
+        rec = hist[-1]
         sd = shares_data.get(code, {})
-        cp = p["cp"] if p else 0
+        cp, chg, vr = rec["cp"], rec["chg"], rec["vr"]
+        vp, dp, sp = rec["vp"], rec["dp"], rec["sp"]
+
+        # 行动标签 (买/观望/无操作) + 卖出提示位
         if cp >= 70:
-            cls = "tr-hi"; sc = "#ef4444"; si = "🔴"
+            sig_emoji, action_txt, action_cls = "🔴", "买入信号", "hi"
         elif cp >= 50:
-            cls = "tr-md"; sc = "#f59e0b"; si = "🟡"
+            sig_emoji, action_txt, action_cls = "🟡", "观望（等确认）", "md"
         else:
-            cls = ""; sc = "#22c55e"; si = "🟢"
+            sig_emoji, action_txt, action_cls = "⚪", "无操作", "lo"
+        sell_hints = ""
+        if chg < -0.5 and vr > 1.5:
+            sell_hints += '<span class="hint">⚠️ 放量下跌</span>'
+        if (sd.get("delta_pct") or 0) < -1:
+            sell_hints += '<span class="hint">🔻 赎回迹象</span>'
 
-        chg = p["chg"] if p else 0
-        chc = "#ef4444" if chg > 0 else ("#22c55e" if chg < 0 else "#94a3b8")
-        tag_html = f'<span style="font-size:8px;background:rgba(239,68,68,0.15);color:#fca5a5;padding:1px 4px;border-radius:2px;margin-left:4px">{p["tag"]}</span>' if (p and p.get("tag")) else ""
+        # 当日数据行
+        chg_cls = "#ef4444" if chg > 0 else ("#22c55e" if chg < 0 else "#94a3b8")
+        shares_txt = "份额 -"
+        if sd.get("shares_yi") is not None:
+            shares_txt = f"份额 {sd['shares_yi']:.1f}亿"
+            if sd.get("delta_yi") is not None:
+                dc = "#ef4444" if sd["delta_yi"] > 0 else ("#22c55e" if sd["delta_yi"] < 0 else "#94a3b8")
+                shares_txt += f' <span style="color:{dc}">({sd["delta_yi"]:+.1f}亿 {sd["delta_pct"]:+.2f}%)</span>'
+        tag_html = f'<span class="tag">{rec["tag"]}</span>' if rec.get("tag") else ""
 
-        # 份额列
-        sh_html = ""
-        if sd:
-            sh_yi = sd.get("shares_yi", "-")
-            d_yi = sd.get("delta_yi")
-            d_pct = sd.get("delta_pct")
-            if d_yi is not None:
-                dc = "#22c55e" if d_yi > 0 else ("#ef4444" if d_yi < 0 else "#94a3b8")
-                arrow = "↑" if d_yi > 0 else ("↓" if d_yi < 0 else "→")
-                sh_html = f'<td style="color:#94a3b8">{sh_yi:.1f}亿</td><td style="font-weight:600;color:{dc}">{arrow}{abs(d_yi):.1f}亿({d_pct:+.2f}%)</td>'
+        # 因子概率条 + 历史趋势 sparkline
+        factors = (_factor_bar("量能P", vp, "#38bdf8") +
+                   _factor_bar("方向P", dp, "#818cf8") +
+                   _factor_bar("份额P", sp, "#f59e0b"))
+        spark = _sparkline(hist[-40:])
+
+        # 因子支撑（展开明细）
+        v_txt = f"量能：倍量 {vr:.2f}x = 当日 {rec['v']:.0f}万 ÷ 20日均 {rec['vma']:.0f}万 → 量能P {vp:.0f}%"
+        f1, f2, f3, f4, disc = _dprob_parts(chg, rec["t5"], rec["t5i"], vr, rec["idx_chg"])
+        raw = f1 * 0.4 + f2 * 0.3 + f3 * 0.2 + f4 * 0.1
+        d_txt = f"方向：{dp:.0f}% = (f1[{f1:.0f}]×0.4 + f2[{f2:.0f}]×0.3 + f3[{f3:.0f}]×0.2 + f4[{f4:.0f}]×0.1)"
+        if disc < 1:
+            d_txt += f" ×{disc:.2f} 普涨折扣 = {raw * disc:.1f}"
+        else:
+            d_txt += f" = {raw:.1f}"
+        if sp is not None:
+            sp_txt = f"份额：{sp:.0f}% ← 份额日变 {rec['share_delta_pct']:+.2f}%（{_sprob_band(rec['share_delta_pct'])}）"
+        else:
+            sp_txt = "份额：不可用（二因子退化: cp = 量能×0.7 + 方向×0.3）"
+
+        # 近40日逐日明细表 (倒序, 最新在上)
+        rows = ""
+        for h in reversed(hist[-40:]):
+            ch = "#ef4444" if h["chg"] > 0 else ("#22c55e" if h["chg"] < 0 else "#94a3b8")
+            if h["cp"] >= 70:
+                s = "🔴"
+            elif h["cp"] >= 50:
+                s = "🟡"
             else:
-                sh_html = f'<td style="color:#94a3b8">{sh_yi}亿</td><td style="color:#64748b">-</td>'
-        else:
-            sh_html = '<td style="color:#64748b">-</td><td style="color:#64748b">-</td>'
+                s = "⚪"
+            sh = f'{h["share_delta_pct"]:+.2f}%' if h["share_delta_pct"] is not None else "-"
+            spv = f'{h["sp"]:.0f}%' if h["sp"] is not None else "-"
+            cp_col = "#ef4444" if h["cp"] >= 70 else ("#f59e0b" if h["cp"] >= 50 else "#cbd5e1")
+            t = f' <span class="tag">{h["tag"]}</span>' if h.get("tag") else ""
+            rows += (f'<tr><td>{h["d"][5:]}{t}</td><td>{h["c"]:.3f}</td>'
+                     f'<td style="color:{ch}">{h["chg"]:+.2f}%</td><td>{h["vr"]:.2f}x</td>'
+                     f'<td>{sh}</td><td>{h["vp"]:.0f}%</td><td>{h["dp"]:.0f}%</td>'
+                     f'<td>{spv}</td><td style="color:{cp_col};font-weight:700">{h["cp"]:.0f}%</td><td>{s}</td></tr>')
 
-        # 份额概率列（新增）
-        sp_val = p["sp"] if p and p.get("has_shares") else "-"
-        sp_col = "#94a3b8"
-        if isinstance(sp_val, (int, float)):
-            sp_col = "#ef4444" if sp_val >= 70 else ("#f59e0b" if sp_val >= 50 else "#22c55e")
-            sp_display = f'{sp_val:.0f}%'
-        else:
-            sp_display = "-"
-
-        # 模型标识
-        model_note = "三因子" if (p and p.get("has_shares")) else "二因子"
-
-        rows += f'''<tr class="{cls}">
-  <td style="white-space:nowrap">{si} <b>{info["n"]}</b></td>
-  <td style="color:#64748b">{code}</td>
-  <td style="color:{chc}">{chg:+.2f}%</td>
-  <td>{p["v"]:.0f}万</td>
-  <td>{p["vma"]:.0f}万</td>
-  <td style="font-weight:600;color:#cbd5e1">{p["vr"]:.2f}x</td>{sh_html}
-  <td style="color:#94a3b8">{p["vp"]:.0f}%</td>
-  <td style="color:#94a3b8">{p["dp"]:.0f}%</td>
-  <td style="color:{sp_col}">{sp_display}</td>
-  <td style="font-weight:700;font-size:13px;color:{sc};white-space:nowrap">{cp:.0f}%{tag_html}</td>
-</tr>'''
-
-    # 信号列表
-    signal_dates = [(d, v) for d, v in date_score.items() if v["high"] + v["mid"] >= 3]
-    signal_dates.sort(key=lambda x: x[0], reverse=True)
-    sig_list = ""
-    for d, v in signal_dates[:8]:
-        tag = SPECIAL.get(d, "")
-        dots = '<div class="sig-dots">'
-        dots += '<div class="sig-dot hi"></div>' * v["high"]
-        dots += '<div class="sig-dot md"></div>' * v["mid"]
-        dots += '</div>'
-        tag_html = f'<span class="sig-tag">{tag}</span>' if tag else ""
-        cnt = f'🔥{v["high"]} 🟡{v["mid"]} CP{v["avg"]:.0f}%'
-        sig_list += f'<div class="sig-row"><span class="sig-date">{d[5:]}</span>{tag_html}{dots}<span class="sig-cnt">{cnt}</span></div>'
-
-    # 份额概览
-    total_shares = sum((shares_data.get(c, {}).get("shares_yi") or 0) for c in ETFS)
-    total_delta = sum((shares_data.get(c, {}).get("delta_yi") or 0) for c in ETFS)
-    delta_cls = "#22c55e" if total_delta > 0 else ("#ef4444" if total_delta < 0 else "#94a3b8")
-    delta_arrow = "↑" if total_delta > 0 else ("↓" if total_delta < 0 else "→")
-
-    # 模型切换说明
-    model_desc = "三因子模型: 量能P×50% + 方向P×20% + 份额P×30%"
-    if shares_available_count == 0:
-        model_desc += " (份额数据不可回溯，当前退化为二因子70/30)"
+        card_id = f"card-{code}"
+        cards += f'''<div class="card" id="{card_id}">
+  <div class="c-head" onclick="toggle('{card_id}')">
+    <div class="c-title"><span class="sig">{sig_emoji}</span> <b>{info["n"]}</b> <span class="code">{code}</span> <span class="idx">{info["idx"]}</span>{tag_html}</div>
+    <div class="c-meta">今日 <span style="color:{chg_cls}">{chg:+.2f}%</span> · 倍量 {vr:.2f}x · {shares_txt}</div>
+  </div>
+  <div class="c-factors">{factors}</div>
+  <div class="c-spark">{spark}</div>
+  <div class="c-action {action_cls}">综合概率 {cp:.0f}% → {action_txt}{sell_hints}</div>
+  <div class="c-btn" onclick="toggle('{card_id}')">▶ 查看支撑数据（点击卡片任意处亦可）</div>
+  <div class="c-detail" onclick="event.stopPropagation()">
+    <div class="d-support">
+      <div>🔍 {v_txt}</div>
+      <div>🔍 {d_txt}</div>
+      <div>🔍 {sp_txt}</div>
+    </div>
+    <table class="d-table"><thead><tr><th>日期</th><th>收盘</th><th>涨跌</th><th>倍量</th><th>份额日变</th><th>量P</th><th>方P</th><th>份P</th><th>CP</th><th>信号</th></tr></thead><tbody>{rows}</tbody></table>
+  </div>
+</div>'''
 
     return f'''<!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=1440,initial-scale=1">
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ETF三因子监测报告</title>
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
-html{{display:flex;justify-content:center;align-items:center;min-height:100vh;background:#0a0f1a}}
-body{{width:1440px;height:810px;overflow:hidden;font-family:-apple-system,"SF Pro Display","PingFang SC","Microsoft YaHei",sans-serif;background:#111c2e;color:#dfe6ef;display:flex;flex-direction:column;border-radius:12px;box-shadow:0 0 80px rgba(56,189,248,0.04)}}
-body::before{{content:'';position:absolute;inset:0;background-image:radial-gradient(rgba(148,163,184,0.03) 1px,transparent 1px);background-size:28px 28px;pointer-events:none;z-index:0}}
-.hdr{{padding:8px 24px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid rgba(56,189,248,0.12);flex-shrink:0;position:relative;z-index:1;background:rgba(17,28,46,0.7);backdrop-filter:blur(8px)}}
-.hdr-left{{display:flex;align-items:baseline;gap:14px}}
-.hdr h1{{font-size:18px;font-weight:700;color:#f1f5f9;letter-spacing:-0.3px}}
-.hdr .sub{{font-size:12px;color:#8896ab}}
-.hdr .meta{{font-size:11px;color:#7a8ba0;text-align:right;line-height:1.6}}
-.hdr .meta .dot{{display:inline-block;width:6px;height:6px;border-radius:50%;background:#22c55e;margin-right:5px;box-shadow:0 0 6px rgba(34,197,94,0.5)}}
-.banner{{margin:6px 22px 0;padding:6px 16px;border-radius:8px;font-size:12px;line-height:1.45;flex-shrink:0;position:relative;z-index:1;display:flex;align-items:flex-start;gap:8px}}
-.banner.warn{{background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.18);color:#fca5a5}}
-.banner.mid{{background:rgba(245,158,11,0.05);border:1px solid rgba(245,158,11,0.15);color:#fcd34d}}
-.banner.ok{{background:rgba(34,197,94,0.04);border:1px solid rgba(34,197,94,0.12);color:#86efac}}
-.banner .ico{{font-size:18px;flex-shrink:0;margin-top:1px}}
-.banner b{{color:#e8edf5}}
-.stats{{display:flex;gap:10px;padding:6px 22px 4px;flex-shrink:0;position:relative;z-index:1}}
-.stat{{flex:1;background:rgba(24,36,56,0.5);border:1px solid rgba(56,189,248,0.1);border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:10px}}
-.stat .vi{{font-size:26px;font-weight:900;line-height:1}}
-.stat .tx{{font-size:11px;color:#8896ab;line-height:1.3}}
-.stat .tx span{{display:block;font-size:12px;color:#dfe6ef;font-weight:600}}
-.main{{display:flex;flex:1;padding:8px 22px 6px;gap:14px;overflow:hidden;position:relative;z-index:1;align-items:stretch}}
-.tbl-wrap{{flex:1;min-width:0;overflow:hidden;background:rgba(20,32,50,0.4);border-radius:8px;border:1px solid rgba(56,189,248,0.08);display:flex;flex-direction:column}}
-.tbl-wrap table{{width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed}}
-.tbl-wrap thead th{{text-align:left;padding:5px 6px;font-weight:600;color:#7a8ba0;font-size:10px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:1px solid rgba(56,189,248,0.1);white-space:nowrap;background:rgba(18,28,44,0.4)}}
-.tbl-wrap td{{padding:12px 6px;border-bottom:1px solid rgba(20,30,50,0.5);color:#b0bdd0;transition:background 0.15s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
-.tbl-wrap tbody tr:hover td{{background:rgba(56,189,248,0.03)}}
-.tbl-wrap tr.tr-hi td{{background:rgba(239,68,68,0.05)}}
-.tbl-wrap tr.tr-hi:hover td{{background:rgba(239,68,68,0.08)}}
-.tbl-wrap tr.tr-md td{{background:rgba(245,158,11,0.03)}}
-.tbl-wrap tr.tr-md:hover td{{background:rgba(245,158,11,0.06)}}
-.tbl-wrap .tnote{{font-size:10px;color:#64748b;padding:6px 10px;border-top:1px solid rgba(56,189,248,0.08);margin-top:auto}}
-.rp{{width:380px;display:flex;flex-direction:column;gap:10px;overflow:hidden;flex-shrink:0;align-self:stretch}}
-.rp .card{{background:rgba(22,34,52,0.45);border:1px solid rgba(56,189,248,0.08);border-radius:8px;overflow:hidden}}
-.rp .card:last-child{{flex:1;display:flex;flex-direction:column}}
-.rp .card .ttl{{font-size:11px;font-weight:600;color:#8b9bb5;padding:8px 10px 6px;display:flex;align-items:center;gap:6px}}
-.rp .card .ttl::before{{content:'';width:3px;height:12px;background:linear-gradient(180deg,#38bdf8,#818cf8);border-radius:2px}}
-.rp .trend{{display:flex;align-items:flex-end;gap:2px;height:44px;padding:4px 10px 8px}}
-.rp .trend .bar{{flex:1;border-radius:2px 2px 0 0;min-width:4px}}
-.rp .trend .bar-hi{{background:linear-gradient(180deg,#ef4444aa,#ef444444)}}
-.rp .trend .bar-md{{background:linear-gradient(180deg,#f59e0baa,#f59e0b44)}}
-.rp .trend .bar-lo{{background:linear-gradient(180deg,#334155,#1a2234)}}
-.rp .sig{{padding:6px 12px 8px;display:flex;flex-direction:column;gap:5px;flex:1;overflow-y:auto}}
-.rp .sig-row{{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:6px;background:rgba(20,30,50,0.4)}}
-.rp .sig-date{{font-size:12px;font-weight:600;color:#dfe6ef;min-width:60px}}
-.rp .sig-tag{{font-size:9px;background:rgba(56,189,248,0.1);color:#7dd3fc;padding:1px 6px;border-radius:3px}}
-.rp .sig-dots{{display:flex;gap:3px;flex:1}}
-.rp .sig-dot{{width:7px;height:7px;border-radius:50%}}
-.rp .sig-dot.hi{{background:#ef4444;box-shadow:0 0 4px rgba(239,68,68,0.4)}}
-.rp .sig-dot.md{{background:#f59e0b;box-shadow:0 0 4px rgba(245,158,11,0.3)}}
-.rp .sig-cnt{{font-size:11px;color:#8896ab;white-space:nowrap}}
-.ftr{{padding:8px 24px;font-size:11px;color:#64748b;border-top:1px solid rgba(56,189,248,0.1);flex-shrink:0;display:flex;justify-content:center;align-items:center;gap:6px;position:relative;z-index:1}}
-.ftr span{{color:#7a8ba0}}
+body{{background:#0a0f1a;color:#dfe6ef;font-family:-apple-system,"SF Pro Display","PingFang SC","Microsoft YaHei",sans-serif;padding:18px 0 30px}}
+.wrap{{max-width:1200px;margin:0 auto;padding:0 16px}}
+.topbar{{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:10px 16px;background:rgba(17,28,46,0.85);border:1px solid rgba(56,189,248,0.12);border-radius:12px;margin-bottom:14px}}
+.topbar h1{{font-size:17px;font-weight:700}}
+.topbar .date{{font-size:12px;color:#8896ab}}
+.badge{{font-size:12px;padding:3px 10px;border-radius:20px;border:1px solid}}
+.badge.warn{{color:#fdba74;border-color:rgba(249,115,22,0.3);background:rgba(249,115,22,0.06)}}
+.badge.mid{{color:#fcd34d;border-color:rgba(245,158,11,0.3);background:rgba(245,158,11,0.06)}}
+.badge.ok{{color:#86efac;border-color:rgba(34,197,94,0.3);background:rgba(34,197,94,0.06)}}
+#btnAll{{margin-left:auto;background:rgba(56,189,248,0.1);border:1px solid rgba(56,189,248,0.25);color:#7dd3fc;padding:4px 12px;border-radius:8px;font-size:12px;cursor:pointer}}
+.cards{{display:grid;grid-template-columns:repeat(auto-fill,minmax(560px,1fr));gap:14px}}
+.card{{background:rgba(17,28,46,0.7);border:1px solid rgba(56,189,248,0.1);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:8px;cursor:pointer;transition:border-color .15s}}
+.card:hover{{border-color:rgba(56,189,248,0.3)}}
+.c-head{{display:flex;flex-direction:column;gap:4px}}
+.c-title{{display:flex;align-items:center;gap:8px}}
+.c-title .sig{{font-size:16px}}
+.c-title b{{font-size:14px}}
+.c-title .code{{color:#64748b;font-size:12px}}
+.c-title .idx{{color:#7a8ba0;font-size:11px;background:rgba(148,163,184,0.1);padding:1px 6px;border-radius:4px}}
+.c-meta{{font-size:12px;color:#8896ab}}
+.tag{{font-size:10px;background:rgba(239,68,68,0.15);color:#fca5a5;padding:1px 5px;border-radius:3px}}
+.c-factors{{display:flex;flex-direction:column;gap:4px}}
+.fbar{{display:flex;align-items:center;gap:8px;font-size:11px;color:#7a8ba0}}
+.fbar span{{width:44px;flex-shrink:0}}
+.ftrack{{flex:1;height:8px;background:rgba(30,41,59,0.8);border-radius:4px;overflow:hidden}}
+.ffill{{height:100%;border-radius:4px}}
+.fbar b{{width:34px;text-align:right;color:#dfe6ef}}
+.c-spark svg{{display:block;width:100%;height:56px;background:rgba(15,23,42,0.6);border-radius:8px;border:1px solid rgba(56,189,248,0.08)}}
+.c-action{{font-size:13px;font-weight:700;padding:8px 12px;border-radius:8px}}
+.c-action.hi{{background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:#fca5a5}}
+.c-action.md{{background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);color:#fcd34d}}
+.c-action.lo{{background:rgba(148,163,184,0.06);border:1px solid rgba(148,163,184,0.15);color:#94a3b8}}
+.hint{{font-size:11px;font-weight:600;color:#fdba74;border:1px solid rgba(249,115,22,0.3);background:rgba(249,115,22,0.06);padding:1px 6px;border-radius:4px;margin-left:6px}}
+.c-btn{{font-size:12px;color:#7dd3fc;text-align:center;padding:4px;border:1px dashed rgba(56,189,248,0.25);border-radius:8px}}
+.c-detail{{display:none;flex-direction:column;gap:10px;border-top:1px solid rgba(56,189,248,0.1);padding-top:10px}}
+.card.open .c-detail{{display:flex}}
+.d-support{{font-size:11.5px;color:#94a3b8;background:rgba(15,23,42,0.6);border-radius:8px;padding:8px 12px;display:flex;flex-direction:column;gap:3px;line-height:1.5}}
+.d-table{{width:100%;border-collapse:collapse;font-size:11px}}
+.d-table th{{text-align:left;padding:4px 6px;color:#7a8ba0;font-weight:600;border-bottom:1px solid rgba(56,189,248,0.1);white-space:nowrap}}
+.d-table td{{padding:4px 6px;border-bottom:1px solid rgba(20,30,50,0.5);color:#b0bdd0;white-space:nowrap}}
+.d-table tbody tr:hover td{{background:rgba(56,189,248,0.03)}}
+.ftr{{margin-top:18px;text-align:center;font-size:11px;color:#64748b}}
+@media (max-width:1180px){{.cards{{grid-template-columns:1fr}}}}
 </style></head><body>
-
-<div class="hdr">
-  <div class="hdr-left">
-    <h1>ETF三因子监测报告</h1>
-    <span class="sub">{model_desc}</span>
+<div class="wrap">
+  <div class="topbar">
+    <h1>🛡️ ETF三因子监测</h1>
+    <span class="date">分析日 {primary_date}</span>
+    <span class="badge {status_cls}">{status_txt}</span>
+    <button id="btnAll" onclick="toggleAll()">📂 全部展开</button>
   </div>
-  <div class="meta">
-    <div><span class="dot"></span>分析日: {primary_date}</div>
-    <div>{datetime.now().strftime("%Y-%m-%d %H:%M")} · v7</div>
-  </div>
+  <div class="cards">{cards}</div>
+  <div class="ftr">ETF国家队资金监测 · 三因子模型 v7（量能50%+方向20%+份额30%）· 份额数据盘后约19:00发布 · 腾讯财经API + 上交所/深交所akshare · 点击卡片查看支撑数据</div>
 </div>
-
-<div class="banner {'warn' if total_high>=2 else 'mid' if total_high>=1 or total_mid>=2 else 'ok'}">
-  <span class="ico">{'🔥' if total_high>=2 else '⚠️' if total_high>=1 or total_mid>=2 else '✅'}</span>
-  <div>📋 <b>综合判断：</b>{verdict}</div>
-</div>
-
-<div class="stats">
-  <div class="stat">
-    <div class="vi" style="color:{'#ef4444' if total_high>0 else '#f59e0b' if total_mid>0 else '#22c55e'}">{total_high}</div>
-    <div class="tx"><span>高确信</span>🔴 触发警报</div>
-  </div>
-  <div class="stat">
-    <div class="vi" style="color:{'#f59e0b' if total_mid>0 else '#4a5568'}">{total_mid}</div>
-    <div class="tx"><span>中等关注</span>🟡 需跟踪</div>
-  </div>
-  <div class="stat">
-    <div class="vi" style="color:{'#ef4444' if hs300_alerts>=3 else '#f59e0b' if hs300_alerts>=2 else '#22c55e'}">{hs300_alerts}/4</div>
-    <div class="tx"><span>沪深300</span>一致性</div>
-  </div>
-  <div class="stat">
-    <div class="vi" style="color:{delta_cls}">{delta_arrow}{abs(total_delta):.1f}</div>
-    <div class="tx"><span>份额日变</span>亿份 · 净申赎</div>
-  </div>
-  <div class="stat">
-    <div class="vi" style="color:#818cf8">{shares_available_count}/7</div>
-    <div class="tx"><span>份额覆盖</span>三因子完整度</div>
-  </div>
-</div>
-
-<div class="main">
-  <div class="tbl-wrap">
-    <table>
-    <thead><tr>
-      <th style="width:20%">ETF名称</th>
-      <th style="width:7%">代码</th>
-      <th style="width:6%">涨跌</th>
-      <th style="width:8%">成交量</th>
-      <th style="width:8%">20日均</th>
-      <th style="width:6%">倍量</th>
-      <th style="width:7%">份额</th>
-      <th style="width:8%">份额日变</th>
-      <th style="width:6%">量能P</th>
-      <th style="width:6%">方向P</th>
-      <th style="width:6%">份额P</th>
-      <th style="width:6%">综合</th>
-    </tr></thead>
-    <tbody>{rows}
-    </tbody>
-    </table>
-    <div class="tnote">
-      ⚡ {model_desc} · 含普涨折扣 · 份额数据来源上交所/深交所akshare · 份额P=份额日变化/前日份额
-    </div>
-  </div>
-
-  <div class="rp">
-    <div class="card">
-      <div class="ttl">📈 15日信号趋势（综合概率）</div>
-      <div class="trend">{bars}</div>
-    </div>
-    <div class="card">
-      <div class="ttl">📅 30日同步信号</div>
-      <div class="sig">{sig_list}</div>
-    </div>
-  </div>
-</div>
-
-<div class="ftr">
-  <span>ETF国家队资金监测 · 三因子模型 v7 · 腾讯财经API + 上交所/深交所akshare</span>
-</div>
-
+<script>
+function toggle(id){{var c=document.getElementById(id);if(c)c.classList.toggle('open')}}
+function toggleAll(){{
+  var cards=document.querySelectorAll('.card');
+  var open=cards.length>0&&cards[0].classList.contains('open');
+  for(var i=0;i<cards.length;i++){{cards[i].classList.toggle('open',!open)}}
+  document.getElementById('btnAll').textContent=open?'📂 全部展开':'📁 全部收起';
+}}
+</script>
 </body></html>'''
 
 
 # ============================================================
-# 邮件发送
+# 运维工具 (--healthcheck / --backfill / --query)
 # ============================================================
 
-def send_email(html_path, json_path, target_date):
-    password = os.environ.get("QQMAIL_AUTH_CODE") or os.environ.get("SMTP_PASS")
-    if not password:
-        print("⚠️ 未设置 QQMAIL_AUTH_CODE 或 SMTP_PASS 环境变量，跳过邮件发送")
-        return False
+def _disp_width(s):
+    """终端显示宽度 (CJK字符按2列计算, 用于表格对齐)"""
+    return sum(2 if ord(ch) > 0x2E80 else 1 for ch in s)
 
-    msg = MIMEMultipart()
-    msg["From"] = EMAIL_FROM
-    msg["To"] = EMAIL_TO
-    msg["Subject"] = f"ETF三因子分析报告 - {target_date} - v7"
+def _pad(s, width):
+    return s + " " * max(0, width - _disp_width(s))
 
-    body = f"📊 ETF三因子监测报告（v7）\n\n分析日期: {target_date}\n模型: 量能50% + 方向20% + 份额30%\n\n报告详见附件。\n\n---\n此邮件由ETF三因子监测系统v7自动发送"
-    msg.attach(MIMEText(body, "plain", "utf-8"))
+def _trunc(s, width):
+    """按显示宽度截断 (避免从CJK字符中间切开)"""
+    out = ""
+    for ch in s:
+        if _disp_width(out + ch) > width:
+            break
+        out += ch
+    return out
 
-    for fpath, fname in [(html_path, f"ETF三因子-{target_date}.html"),
-                           (json_path, f"ETF三因子-{target_date}.json")]:
-        if os.path.exists(fpath):
-            with open(fpath, "rb") as f:
-                part = MIMEBase("application", "octet-stream")
-                part.set_payload(f.read())
-                encoders.encode_base64(part)
-                part.add_header("Content-Disposition", f"attachment; filename={fname}")
-                msg.attach(part)
+def fmt_pct(v):
+    return f"{v:.0f}%" if isinstance(v, (int, float)) else "-"
 
+def fmt_chg(v):
+    return f"{v:+.2f}%" if isinstance(v, (int, float)) else "-"
+
+def fmt_vr(v):
+    return f"{v:.2f}x" if isinstance(v, (int, float)) else "-"
+
+def healthcheck():
+    """环境健康检查: akshare / 数据源 / DB, 任一关键项失败退出码1"""
+    print("=" * 60)
+    print("🩺 ETF三因子系统健康检查")
+    print("=" * 60)
+    fails = 0
+
+    def check(name, ok, detail=""):
+        nonlocal fails
+        mark = "✅" if ok else "❌"
+        print(f"  {mark} {name}" + (f" — {detail}" if detail else ""))
+        if not ok:
+            fails += 1
+
+    # 1. akshare 可导入
     try:
-        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=15) as server:
-            server.login(EMAIL_FROM, password)
-            server.sendmail(EMAIL_FROM, EMAIL_TO, msg.as_string())
-        print(f"✅ 邮件已发送至 {EMAIL_TO}")
-        return True
+        import akshare as ak
+        check("akshare 可导入", True, f"v{getattr(ak, '__version__', '?')}")
+    except ImportError:
+        check("akshare 可导入", False, "未安装, 运行 pip3 install akshare")
+
+    # 2. 腾讯K线API
+    k = fetch("sh000300", 5)
+    check("腾讯K线API", len(k) > 0, f"{len(k)}条K线" if k else "无数据(可能网络不通)")
+
+    # 3. 上交所份额API (内置 今天→昨天→前天 重试)
+    sse = fetch_fund_shares("510300")
+    if sse:
+        check("上交所份额API", True, f"510300 {sse['shares_yi']:.1f}亿份 ({sse['data_date']})")
+    else:
+        check("上交所份额API", False, "获取失败(份额盘后约19:00更新, 或网络问题)")
+
+    # 4. 深交所份额API (内置 7天回溯)
+    szse = fetch_fund_shares("159919")
+    if szse:
+        check("深交所份额API", True, f"159919 {szse['shares_yi']:.1f}亿份 ({szse['data_date']})")
+    else:
+        check("深交所份额API", False, "获取失败(份额盘后约19:00更新, 或网络问题)")
+
+    # 5. SQLite数据库
+    db_ok, db_detail = True, ""
+    try:
+        store = ETFDataStore()
+        st = store.get_stats()
+        db_detail = f"{st['total_records']}条 / {st['total_dates']}日 @ {store.db_path}"
     except Exception as e:
-        print(f"❌ 邮件发送失败: {e}")
+        db_ok, db_detail = False, str(e)
+    check("SQLite数据库", db_ok, db_detail)
+
+    print("=" * 60)
+    if fails == 0:
+        print("🎉 全部检查通过, 系统可正常运行")
+        return True
+    print(f"❌ {fails} 项关键检查失败, 请按上方提示修复 (定时任务可能失败, 退出码1)")
+    return False
+
+
+def backfill_shares():
+    """一次性回补全部份额历史 (绕过主流水线每次最多20天的限制)"""
+    print("=" * 60)
+    print("📡 份额历史完整回溯")
+    print("=" * 60)
+    store = ETFDataStore() if DATA_STORE_AVAILABLE else None
+    idx = fetch("sh000300", 60)
+    if not idx:
+        print("❌ 获取沪深300交易日历失败(腾讯K线API不可达)")
         return False
+
+    all_dates = [d["date"] for d in idx]
+    shares_history = store.get_shares_history() if store else {}
+    if not shares_history:
+        shares_history = load_shares_history()  # JSON 兼容回退
+    # 清理空日期残留 (push2失败遗留)
+    empty = [d for d, v in shares_history.items() if isinstance(v, dict) and len(v) == 0]
+    for d in empty:
+        del shares_history[d]
+    if empty:
+        print(f"  🧹 清理{len(empty)}个空日期")
+
+    print(f"  📦 现有历史: {len(shares_history)}日")
+    dates_to_fetch = sorted(set(all_dates) - set(shares_history.keys()))
+    if not dates_to_fetch:
+        print(f"  ✅ 历史已完整 ({len(all_dates)}日全部覆盖), 无需回溯")
+        return True
+
+    print(f"  🎯 待回溯: {len(dates_to_fetch)}日 (交易日历共{len(all_dates)}日)")
+    bulk = fetch_history_shares_bulk(dates_to_fetch)
+    if not bulk:
+        print("  ⚠️ 未获取到任何数据 (akshare未安装或接口异常)")
+        return False
+
+    new_days = 0
+    for d, entries in bulk.items():
+        if d not in shares_history:
+            shares_history[d] = {}
+        shares_history[d].update(entries)
+        new_days += 1
+    _persist_shares(store, shares_history)
+    print(f"  ✅ 新增 {new_days}日份额数据, 累计 {len(shares_history)}日")
+    print(f"  💡 每次完整分析会自动增量采集, 此后无需再回溯")
+    return True
+
+
+def query_signals(days=7, code=None):
+    """从本地DB查询历史信号 (不跑完整分析)"""
+    if not DATA_STORE_AVAILABLE:
+        print("❌ etf_data_store.py 不可用")
+        return False
+    store = ETFDataStore()
+    end = datetime.now().strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    rows = store.get_range(code=code, start_date=start, end_date=end)
+    if not rows:
+        print(f"  ℹ️ DB中 {start} ~ {end} 无记录")
+        print("  💡 提示: 先运行 python3 etf_v7_threefactor.py --record 或完整分析生成数据")
+        return True
+
+    print("=" * 60)
+    print(f"📋 信号查询: {start} ~ {end}" + (f" (过滤: {code})" if code else ""))
+    print("=" * 60)
+    # 控制台配色与报告统一: 红=买入方向(涨), 绿=卖出方向(跌); 仅TTY时启用, 避免污染管道输出
+    use_color = sys.stdout.isatty()
+    RED, GREEN, RESET = "\033[91m", "\033[92m", "\033[0m"
+    header = " ".join([
+        _pad("日期", 10), _pad("代码", 6), _pad("名称", 18),
+        f"{'涨跌':>8}", f"{'倍量':>7}", f"{'量能P':>6}", f"{'方向P':>6}", f"{'份额P':>6}", f"{'CP':>5}", "信号",
+    ])
+    print("  " + header)
+    print("  " + "-" * (_disp_width(header) + 4))
+
+    for r in rows:
+        cp = r.get("composite_prob")
+        level = r.get("signal_level")
+        if level == "HIGH":
+            sig = "🔴"
+        elif level == "MID":
+            sig = "🟡"
+        else:
+            sig = "🔴" if (cp or 0) >= 70 else ("🟡" if (cp or 0) >= 50 else "⚪")
+        name = _trunc(r.get("name") or "", 18)
+        chg_v = r.get("change_pct")
+        chg_s = f"{fmt_chg(chg_v):>8}"
+        if use_color and isinstance(chg_v, (int, float)) and chg_v != 0:
+            chg_s = (RED if chg_v > 0 else GREEN) + chg_s + RESET
+        line = " ".join([
+            _pad(r.get("date") or "", 10), _pad(r.get("code") or "", 6), _pad(name, 18),
+            chg_s, f"{fmt_vr(r.get('volume_ratio')):>7}",
+            f"{fmt_pct(r.get('vol_prob')):>6}", f"{fmt_pct(r.get('dir_prob')):>6}",
+            f"{fmt_pct(r.get('share_prob')):>6}", f"{fmt_pct(cp):>5}", sig,
+        ])
+        print("  " + line)
+    return True
 
 
 # ============================================================
@@ -903,12 +957,15 @@ def record_shares_only():
         print(f"  📊 {code} {info['n']}...", end=" ")
         sh_data = fetch_fund_shares(code)
         if sh_data:
-            store.upsert_record(today, code, {
-                "date": today, "code": code,
+            d_date = sh_data["data_date"]
+            store.upsert_record(d_date, code, {
+                "date": d_date, "code": code,
                 "name": info["n"], "idx_name": info["idx"],
                 "shares_yi": sh_data.get("shares_yi"),
             })
-            print(f"✅ {sh_data['shares_yi']:.1f}亿份")
+            store.upsert_shares_bulk({d_date: {code: {
+                "shares_yi": sh_data["shares_yi"], "ts": datetime.now().isoformat()}}})
+            print(f"✅ {sh_data['shares_yi']:.1f}亿份 (数据日 {d_date})")
         else:
             print("❌ 获取失败")
     stats = store.get_stats()
@@ -917,7 +974,7 @@ def record_shares_only():
     print(f"   含份额: {stats['records_with_shares']}条")
 
 
-def main(target_date=None, do_send=False, record_only=False):
+def main(target_date=None, record_only=False):
     # 初始化 DB
     store = ETFDataStore() if DATA_STORE_AVAILABLE else None
 
@@ -940,10 +997,14 @@ def main(target_date=None, do_send=False, record_only=False):
     if idx_300:
         print(f"  ✅ {len(idx_300)}条  {idx_300[-1]['date']}~{idx_300[0]['date']}")
 
-    # 2. 加载历史份额数据（优先从本地DB/JSON，其次akshare回溯）
+    # 2. 加载历史份额数据（优先DB shares_raw 全量, 其次JSON, 再akshare回溯）
     print("\n📊 Step 2: 加载历史份额数据...")
-    shares_history = load_shares_history()
-    print(f"  📦 JSON历史: {len(shares_history)}日")
+    shares_history = store.get_shares_history() if store else {}
+    if shares_history:
+        print(f"  📦 DB原始份额: {len(shares_history)}日")
+    else:
+        shares_history = load_shares_history()  # JSON 兼容回退
+        print(f"  📦 JSON历史: {len(shares_history)}日")
     
     # 清理空日期 (push2失败残留)
     empty_dates = [d for d, v in shares_history.items() if isinstance(v, dict) and len(v) == 0]
@@ -986,30 +1047,39 @@ def main(target_date=None, do_send=False, record_only=False):
                         shares_history[d] = {}
                     shares_history[d].update(entries)
                     new_count += 1
-                save_shares_history(shares_history)
+                _persist_shares(store, shares_history)
                 print(f"  ✅ 补充了{new_count}日份额数据")
     
-    # 获取实时份额并写入本地DB
+    # 获取实时份额并写入本地DB (按实际数据日存储, 盘中取到的是最近发布日)
     if store and not target_date:
-        # 实时运行：采集份额数据
         today_str = datetime.now().strftime("%Y-%m-%d")
         print(f"  📡 采集 {today_str} 实时份额数据...")
+        shares_collected = 0
+        stale_dates = set()
         for code, info in ETFS.items():
             sh_data = fetch_fund_shares(code)
             if sh_data:
-                store.upsert_record(today_str, code, {
-                    "date": today_str, "code": code,
+                d_date = sh_data["data_date"]
+                store.upsert_record(d_date, code, {
+                    "date": d_date, "code": code,
                     "name": info["n"], "idx_name": info["idx"],
                     "shares_yi": sh_data.get("shares_yi"),
                 })
                 # 也记录到 JSON（保持兼容）
-                if today_str not in shares_history:
-                    shares_history[today_str] = {}
-                shares_history[today_str][code] = {"shares_yi": sh_data["shares_yi"], "ts": datetime.now().isoformat()}
-                print(f"    ✅ {code} {info['n'][:12]}: {sh_data['shares_yi']:.1f}亿份")
+                if d_date not in shares_history:
+                    shares_history[d_date] = {}
+                shares_history[d_date][code] = {"shares_yi": sh_data["shares_yi"], "ts": datetime.now().isoformat()}
+                print(f"    ✅ {code} {info['n'][:12]}: {sh_data['shares_yi']:.1f}亿份 (数据日 {d_date})")
+                shares_collected += 1
+                if d_date != today_str:
+                    stale_dates.add(d_date)
             else:
-                print(f"    ⚠️ {code} {info['n'][:12]}: 今日份额数据暂未发布")
-        save_shares_history(shares_history)
+                print(f"    ⚠️ {code} {info['n'][:12]}: 份额数据暂未发布")
+        if shares_collected == 0:
+            print("  ⚠️ 盘中运行：当日份额未发布(盘后约19:00)，今日信号仅基于盘中量价+昨日份额，建议19:30后重跑")
+        elif stale_dates:
+            print(f"  ⚠️ 份额数据为最近发布日(盘中为{max(stale_dates)})，今日无当日份额，今日信号退化为二因子")
+        _persist_shares(store, shares_history)
     elif store and target_date:
         # 指定日期：尝试从akshare获取该日的份额数据
         d8 = target_date.replace('-', '')
@@ -1019,7 +1089,7 @@ def main(target_date=None, do_send=False, record_only=False):
                 if target_date not in shares_history:
                     shares_history[target_date] = {}
                 shares_history[target_date][code] = entry
-            save_shares_history(shares_history)
+            _persist_shares(store, shares_history)
             print(f"  ✅ 已从akshare获取{target_date}的份额数据")
         else:
             db_shares = store.get_range(start_date=target_date, end_date=target_date)
@@ -1057,11 +1127,13 @@ def main(target_date=None, do_send=False, record_only=False):
         if not data:
             print("    ❌ 数据获取失败")
             continue
+        if store:
+            store.upsert_klines(code, data)  # 原始K线入库, 逐日累积突破60天API窗口
         if len(data) < 22:
             print(f"    ⚠️ 仅{len(data)}条，不足22条")
             continue
 
-        hist = analyze_all(data, idx_300, shares_map, target_date or "", 35)
+        hist = analyze_all(data, idx_300, shares_map, target_date or "", code, 60)
         if not hist:
             print("    ⚠️ 分析失败")
             continue
@@ -1101,7 +1173,7 @@ def main(target_date=None, do_send=False, record_only=False):
 
     # 5. 重要信号回溯 (生成 actual_date)
     print("\n" + "=" * 70)
-    print("📋 30日重要信号回溯（三因子模型）")
+    print("📋 历史重要信号回溯（三因子模型）")
     print("=" * 70)
     date_sig = {}
     for code, hist in all_hist.items():
@@ -1168,7 +1240,7 @@ def main(target_date=None, do_send=False, record_only=False):
 
     # 7. 生成HTML (原step 6)
     print(f"\n🎨 Step 7: 生成三因子HTML报告 (分析日: {actual_date})...")
-    html = gen_html(all_hist, latest_map, idx_300, target_shares_data, target_date or "")
+    html = gen_html(all_hist, target_shares_data, target_date or "")
     with open(THREE_FACTOR_HTML, "w", encoding="utf-8") as f:
         f.write(html)
     print(f"  ✅ {THREE_FACTOR_HTML} ({len(html)} bytes)")
@@ -1185,13 +1257,6 @@ def main(target_date=None, do_send=False, record_only=False):
         }, f, ensure_ascii=False, indent=2)
     print(f"  ✅ {THREE_FACTOR_OUT}")
 
-    # 9. 发送邮件 (原step 8)
-    if do_send:
-        print(f"\n📧 Step 8: 发送邮件到 {EMAIL_TO}...")
-        send_email(THREE_FACTOR_HTML, THREE_FACTOR_OUT, actual_date)
-    else:
-        print(f"\n📧 跳过邮件发送 (使用 --send 启用)")
-
     return html
 
 
@@ -1199,12 +1264,20 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ETF三因子监测 v6.1")
     parser.add_argument("--date", type=str, default=None,
                         help="分析日期 (YYYY-MM-DD)，默认最近交易日")
-    parser.add_argument("--send", action="store_true",
-                        help="发送邮件")
     parser.add_argument("--record", action="store_true",
                         help="仅采集当日份额数据入库，不做完整分析")
     parser.add_argument("--stats", action="store_true",
                         help="查看本地DB状态，不做分析")
+    parser.add_argument("--healthcheck", action="store_true",
+                        help="环境健康检查(akshare/数据源/DB)，不做分析")
+    parser.add_argument("--backfill", action="store_true",
+                        help="一次性回补全部份额历史，不做分析")
+    parser.add_argument("--query", action="store_true",
+                        help="从本地DB查询历史信号，不做分析")
+    parser.add_argument("--days", type=int, default=7,
+                        help="--query 回溯天数 (默认7)")
+    parser.add_argument("--code", type=str, default=None,
+                        help="--query 过滤ETF代码")
     args = parser.parse_args()
 
     if args.stats:
@@ -1221,6 +1294,7 @@ if __name__ == "__main__":
         print(f"  覆盖交易日: {stats['total_dates']}")
         print(f"  日期范围:   {stats['date_range'][0]} ~ {stats['date_range'][1]}")
         print(f"  含份额记录: {stats['records_with_shares']}/{stats['total_records']}")
+        print(f"  原始数据:   K线 {stats.get('klines_records', 0)}条 / 份额 {stats.get('shares_records', 0)}条")
         print(f"\n  最近5个交易日:")
         for d, cnt in stats["recent_dates"]:
             print(f"    {d}: {cnt}只ETF")
@@ -1228,4 +1302,13 @@ if __name__ == "__main__":
             print("\n  💡 提示: 运行 --record 采集今日数据入库")
         sys.exit(0)
 
-    main(args.date, args.send, args.record)
+    if args.healthcheck:
+        sys.exit(0 if healthcheck() else 1)
+
+    if args.backfill:
+        sys.exit(0 if backfill_shares() else 1)
+
+    if args.query:
+        sys.exit(0 if query_signals(args.days, args.code) else 1)
+
+    main(args.date, args.record)

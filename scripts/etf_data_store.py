@@ -68,6 +68,26 @@ CREATE_INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_etf_date_code ON etf_daily(date, code);",
 ]
 
+# 原始数据表 (按需拉取, 存一次用多次; 为后续多样化分析提供数据)
+CREATE_RAW_SQL = [
+    """CREATE TABLE IF NOT EXISTS klines_raw (
+        code    TEXT NOT NULL,          -- ETF代码 (sh000300=指数)
+        date    TEXT NOT NULL,          -- YYYY-MM-DD
+        open    REAL, close REAL, high REAL, low REAL,
+        volume  REAL,
+        PRIMARY KEY (code, date)
+    );""",
+    """CREATE TABLE IF NOT EXISTS shares_raw (
+        date       TEXT NOT NULL,       -- 份额实际数据日 YYYY-MM-DD (盘后19:00发布)
+        code       TEXT NOT NULL,
+        shares_yi  REAL,                -- 份额(亿份)
+        ts         TEXT,                -- 采集时间
+        PRIMARY KEY (date, code)
+    );""",
+    "CREATE INDEX IF NOT EXISTS idx_klines_date ON klines_raw(date);",
+    "CREATE INDEX IF NOT EXISTS idx_shares_code ON shares_raw(code);",
+]
+
 class ETFDataStore:
     def __init__(self, db_path=None):
         self.db_path = db_path or DB_PATH
@@ -79,6 +99,8 @@ class ETFDataStore:
             conn.execute(CREATE_TABLE_SQL)
             for idx_sql in CREATE_INDEX_SQL:
                 conn.execute(idx_sql)
+            for raw_sql in CREATE_RAW_SQL:
+                conn.execute(raw_sql)
             conn.commit()
 
     # ================================================================
@@ -204,7 +226,66 @@ class ETFDataStore:
             ).fetchone()
             stats["records_with_shares"] = row["cnt"]
 
+            # 原始数据表计数
+            row = conn.execute("SELECT COUNT(*) as cnt FROM klines_raw").fetchone()
+            stats["klines_records"] = row["cnt"]
+            row = conn.execute("SELECT COUNT(*) as cnt FROM shares_raw").fetchone()
+            stats["shares_records"] = row["cnt"]
+
             return stats
+
+    # ================================================================
+    # 原始数据存储 (klines_raw / shares_raw, 按需拉取存一次用多次)
+    # ================================================================
+
+    def upsert_klines(self, code, bars):
+        """原始K线入库: bars = [{date,o,c,h,l,v}] (每日增量, 无删除)"""
+        rows = [(code, b["date"], b["o"], b["c"], b["h"], b["l"], b["v"]) for b in bars]
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executemany(
+                "INSERT OR REPLACE INTO klines_raw (code,date,open,close,high,low,volume) VALUES (?,?,?,?,?,?,?)",
+                rows)
+            conn.commit()
+        return len(rows)
+
+    def get_klines(self, code, start_date=None, end_date=None):
+        """查询原始K线 (code 可为 'sh000300' 指数)"""
+        sql = "SELECT date,open,close,high,low,volume FROM klines_raw WHERE code=?"
+        params = [code]
+        if start_date:
+            sql += " AND date>=?"
+            params.append(start_date)
+        if end_date:
+            sql += " AND date<=?"
+            params.append(end_date)
+        sql += " ORDER BY date"
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(sql, params).fetchall()
+        return [{"date": r["date"], "o": r["open"], "c": r["close"],
+                 "h": r["high"], "l": r["low"], "v": r["volume"]} for r in rows]
+
+    def upsert_shares_bulk(self, history):
+        """份额原始数据入库: history = {date: {code: {shares_yi, ts}}} (全量累积, 无60天裁剪)"""
+        rows = [(d, c, e.get("shares_yi"), e.get("ts"))
+                for d, codes in history.items() for c, e in codes.items()]
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executemany(
+                "INSERT OR REPLACE INTO shares_raw (date,code,shares_yi,ts) VALUES (?,?,?,?)",
+                rows)
+            conn.commit()
+        return len(rows)
+
+    def get_shares_history(self):
+        """从DB读取全量份额历史 → {date: {code: {shares_yi, ts}}} (无限累积)"""
+        result = {}
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT date,code,shares_yi,ts FROM shares_raw ORDER BY date").fetchall()
+        for r in rows:
+            result.setdefault(r["date"], {})[r["code"]] = {
+                "shares_yi": r["shares_yi"], "ts": r["ts"]}
+        return result
 
     # ================================================================
     # 与三因子模型集成

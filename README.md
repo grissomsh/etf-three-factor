@@ -9,10 +9,9 @@
 这个 skill 支持以下能力：
 
 - 数据获取：腾讯财经 K 线 + akshare 上交所/深交所份额数据
-- 本地存储：使用 SQLite 持久化历史数据
+- 本地存储：SQLite 持久化历史数据（分析结果 + 原始 K 线/份额）
 - 三因子分析：量能概率 50% + 方向概率 20% + 份额概率 30%
-- 报告输出：生成 HTML 可视化报告与 JSON 数据
-- 通知发送：支持 QQ 邮箱或任意 SMTP 邮件发送
+- 报告输出：每 ETF 独立卡片的交互式 HTML 报告（点击查看支撑数据）
 
 适用场景：
 
@@ -24,6 +23,7 @@
 ## 项目结构
 
 - `SKILL.md`：skill 入口说明
+- `setup.sh`：一键部署脚本
 - `scripts/etf_v7_threefactor.py`：v7 主分析脚本
 - `scripts/etf_data_store.py`：SQLite 数据存储模块
 - `references/etf_model.md`：三因子模型详解
@@ -32,6 +32,10 @@
 ## 快速开始
 
 ```bash
+# 1. 一键部署（建目录/复制脚本/装akshare/配置邮箱）
+bash setup.sh
+
+# 2. 运行分析
 cd scripts
 python etf_v7_threefactor.py
 ```
@@ -41,7 +45,24 @@ python etf_v7_threefactor.py
 - `python etf_v7_threefactor.py --record`：仅采集份额数据
 - `python etf_v7_threefactor.py --stats`：查看数据库状态
 - `python etf_v7_threefactor.py --date 2026-04-30`：分析指定日期
-- `python etf_v7_threefactor.py --send`：生成报告并发送邮件
+
+运维命令：
+
+- `python etf_v7_threefactor.py --healthcheck`：环境健康检查（数据源/DB）
+- `python etf_v7_threefactor.py --backfill`：一次性回补全部份额历史
+- `python etf_v7_threefactor.py --query --days 7`：从本地 DB 查询历史信号
+
+## 测试（事件锚点回归）
+
+用历史公开事件（国家队增持）作为锚点验证模型信号能力。fixtures 为静态数据快照，测试离线确定性运行：
+
+```bash
+python3 tests/test_events.py --list     # 查看锚点清单
+python3 tests/test_events.py            # 运行全部锚点测试
+python3 tests/test_events.py --build    # 重建 fixtures（需 akshare + 网络，约5-10分钟）
+```
+
+锚点集：2024-02（汇金扩大增持范围）、2025-04（盘中公告增持）、2026-04（均衡增持）、2026-07（单周净申购2036亿创纪录）四次增持事件为正锚点，2026-08 平静期为负锚点。**期望值来自公开事实而非模型调参**——正锚点失败时应先调查（数据源差异/模型盲区），而不是放宽期望。
 
 ## 三因子模型
 
@@ -73,24 +94,11 @@ python etf_v7_threefactor.py
 
 这次升级后，份额数据已经支持历史回溯，不再依赖只能读实时值的旧接口。
 
-## 邮件配置
-
-首次使用邮件功能前，需要配置环境变量：
-
-```bash
-export ETF_EMAIL_FROM="你的邮箱@qq.com"
-export ETF_EMAIL_TO="你的收件邮箱@qq.com"
-export ETF_SMTP_PASS="你的16位授权码"
-```
-
-完整配置说明见 [config.md](/D:/codes/etf-three-factor/references/config.md)。
-
 ## v6 到 v7 的变化
 
 - 份额数据源从 `push2.eastmoney.com` 切换到 `akshare`
 - 支持上交所、深交所 ETF 份额完整历史回溯
 - 主脚本升级为 `scripts/etf_v7_threefactor.py`
-- 邮件配置改为环境变量方案
 - 工作目录与输出路径统一到新的 `~/.etf-skill` 体系
 
 ## 版权与来源

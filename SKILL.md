@@ -1,6 +1,6 @@
 ---
 name: etf-three-factor-v7
-description: 🛡️ 三因子ETF国家队资金监测系统 v7 — 追踪国家队（中央汇金）ETF操作信号。全新数据源（akshare交易所官方数据）、完整历史回溯、一键分析+邮件。支持：① 数据获取（腾讯财经K线 + akshare上交所/深交所份额）② 本地SQLite存档 ③ 三因子分析（量能P50% + 方向P20% + 份额P30%）④ HTML可视化报告 ⑤ 邮件发送（支持QQ邮箱/任意SMTP）。当用户需要运行ETF三因子分析、查询国家队信号、查看每日监测报告、或设置定时任务时使用。
+description: 🛡️ 三因子ETF国家队资金监测系统 v7 — 追踪国家队（中央汇金）ETF操作信号。全新数据源（akshare交易所官方数据）、完整历史回溯、一键分析。支持：① 数据获取（腾讯财经K线 + akshare上交所/深交所份额）② 本地SQLite存档（分析结果+原始K线/份额）③ 三因子分析（量能P50% + 方向P20% + 份额P30%）④ 每ETF独立卡片的交互式HTML报告（点击查看支撑数据）。当用户需要运行ETF三因子分析、查询国家队信号、查看每日监测报告、或设置定时任务时使用。
 ---
 
 # 🛡️ etf-three-factor-v7 — 三因子ETF监测系统
@@ -11,6 +11,7 @@ description: 🛡️ 三因子ETF国家队资金监测系统 v7 — 追踪国家
 
 - **`scripts/etf_v7_threefactor.py`** — 主分析脚本，一键流水线
 - **`scripts/etf_data_store.py`** — SQLite本地数据存储模块
+- **`setup.sh`** — 一键部署脚本（建目录/复制脚本/装akshare/配置邮箱）
 - **`references/etf_model.md`** — 三因子模型详细说明
 - **`references/config.md`** — 配置与部署指南
 
@@ -31,9 +32,11 @@ python3 etf_v7_threefactor.py
 |------|------|------|
 | 📊 完整分析 | `python3 etf_v7_threefactor.py` | 一键全流程 |
 | 📅 分析特定日期 | `python3 etf_v7_threefactor.py --date 2026-04-30` | 历史回溯分析 |
-| 📤 生成报告+发邮件 | `python3 etf_v7_threefactor.py --send` | 完整+邮件 |
 | 📡 仅采集份额入库 | `python3 etf_v7_threefactor.py --record` | 只记录不含分析 |
 | 📦 查看数据库状态 | `python3 etf_v7_threefactor.py --stats` | 统计信息 |
+| 🩺 健康检查 | `python3 etf_v7_threefactor.py --healthcheck` | 环境自检(数据源/DB) |
+| 📡 完整回溯 | `python3 etf_v7_threefactor.py --backfill` | 一次性补满份额历史 |
+| 📋 信号查询 | `python3 etf_v7_threefactor.py --query --days 7` | 从DB查历史信号 |
 
 ---
 
@@ -76,36 +79,15 @@ python3 etf_v7_threefactor.py
 
 ---
 
-## 📧 邮件配置（必读 ⚠️）
-
-邮件功能依赖环境变量，首次使用前必须配置：
-
-```bash
-# 必填项
-export ETF_EMAIL_FROM="你的邮箱@qq.com"
-export ETF_EMAIL_TO="你的收件邮箱@qq.com"
-export ETF_SMTP_PASS="你的16位授权码"
-
-# 永久写入 ~/.zshrc（推荐）
-echo 'export ETF_EMAIL_FROM="你的邮箱@qq.com"' >> ~/.zshrc
-echo 'export ETF_EMAIL_TO="你的邮箱@qq.com"' >> ~/.zshrc
-echo 'export ETF_SMTP_PASS="你的授权码"' >> ~/.zshrc
-source ~/.zshrc
-```
-
-详细配置说明见 `references/config.md`
-
----
-
 ## ⏰ 定时任务
 
-建议工作日 16:30 运行：
+建议工作日 16:30 运行（收盘后份额已发布）：
 
 ```bash
 openclaw cron add
 # name: "ETF三因子日报-v7"
 # schedule: 30 16 * * 1-5 (Asia/Shanghai)
-# command: python3 ~/.etf-skill/scripts/etf_v7_threefactor.py --send
+# command: python3 ~/.etf-skill/scripts/etf_v7_threefactor.py
 ```
 
 ---
@@ -128,7 +110,7 @@ openclaw cron add
 
 - Python 3.7+
 - **akshare** — `pip3 install akshare`
-- 其余为 Python 标准库（json, urllib, sqlite3, smtplib, email, argparse）
+- 其余为 Python 标准库（json, urllib, sqlite3, argparse）
 
 ---
 
@@ -140,7 +122,6 @@ openclaw cron add
 | 历史回溯 | ❌ 不可回溯 | ✅ 完整回溯 |
 | 数据可靠性 | 依赖第三方实时接口 | 来自上交所/深交所 |
 | 首次运行 | 仅当天数据 | 自动回补20天历史 |
-| 邮件配置 | 硬编码邮箱 | ✅ 环境变量，可自由配置 |
 
 更多详情:
 - 📐 模型数学原理 → `references/etf_model.md`
