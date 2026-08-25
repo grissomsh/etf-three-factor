@@ -25,7 +25,7 @@ if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 sys.path.insert(0, os.path.join(_SCRIPT_DIR, "..", "scripts"))
 
-from etf_v7_threefactor import ETFS, analyze_all, get_historical_share, fetch_history_shares_bulk
+from etf_threefactor import ETFS, analyze_all, get_historical_share, fetch_history_shares_bulk
 
 TESTS_DIR = _SCRIPT_DIR
 EVENTS_FILE = os.path.join(TESTS_DIR, "events.json")
@@ -134,7 +134,7 @@ def run_anchor(anchor):
     if err:
         return False, lines + [f"  ❌ {err}"]
 
-    # shares_map: 与 etf_v7_threefactor.main() 完全相同的构建路径
+    # shares_map: 与 etf_threefactor.main() 完全相同的构建路径
     shares_hist = fixture["shares"]
     shares_map = {}
     for code in ETFS:

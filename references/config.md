@@ -1,4 +1,4 @@
-# ⚙️ ETF三因子系统 v7 — 配置与部署指南
+# ⚙️ ETF三因子系统 — 配置与部署指南
 
 ---
 
@@ -63,7 +63,7 @@ pip3 install -i https://mirrors.aliyun.com/pypi/simple/ akshare   # 交易所ETF
 
 ---
 
-## 🔗 API数据源（v7）
+## 🔗 API数据源
 
 ### 1. K线行情 — 腾讯财经
 
@@ -120,8 +120,8 @@ df = ak.fund_scale_daily_szse(start_date='20260506', end_date='20260512', symbol
 
 | 场景           | 时间         | 命令                                     |
 | -------------- | ------------ | ---------------------------------------- |
-| 日报（收盘后） | 工作日 16:30 | `python3 etf_v7_threefactor.py`          |
-| 仅记录份额     | 工作日 16:00 | `python3 etf_v7_threefactor.py --record` |
+| 日报（收盘后） | 工作日 16:30 | `python3 etf_threefactor.py`          |
+| 仅记录份额     | 工作日 16:00 | `python3 etf_threefactor.py --record` |
 
 ### 创建定时任务（推荐：收盘后完整分析）
 
@@ -132,15 +132,15 @@ openclaw cron add
 配置：
 
 ```yaml
-name: "ETF三因子日报-v7·16:30"
+name: "ETF三因子日报·16:30"
 schedule: "30 16 * * 1-5" # 周一至周五 16:30（Asia/Shanghai）
 sessionTarget: isolated
 payload:
   kind: agentTurn
   message: |
-    运行 ETF v7 三因子分析（完整流程）:
+    运行 ETF 三因子分析（完整流程）:
     cd ~/.etf-skill/scripts
-    python3 etf_v7_threefactor.py
+    python3 etf_threefactor.py
   timeoutSeconds: 180
 ```
 
@@ -151,13 +151,13 @@ payload:
 ```
 ~/.etf-skill/
 ├── scripts/                         # 主脚本目录
-│   ├── etf_v7_threefactor.py        # 主分析脚本（一键流水线）
+│   ├── etf_threefactor.py        # 主分析脚本（一键流水线）
 │   └── etf_data_store.py            # SQLite数据存储模块
 └── workspace/
     ├── etf_history.db                # SQLite数据库
     ├── etf_shares_history.json       # 份额JSON历史（自动维护）
-    ├── ETF三因子分析-v7.html         # HTML报告
-    └── ETF三因子分析-v7.json         # JSON数据
+    ├── ETF三因子分析.html         # HTML报告
+    └── ETF三因子分析.json         # JSON数据
 
 # Skill说明文件（与本文件同级目录）
 SKILL.md              # 技能说明
@@ -170,7 +170,7 @@ references/
 
 ## 🔄 自定义监控ETF
 
-修改 `scripts/etf_v7_threefactor.py` 中的 `ETFS` 字典：
+修改 `scripts/etf_threefactor.py` 中的 `ETFS` 字典：
 
 ```python
 ETFS = {
@@ -189,7 +189,7 @@ ETFS = {
 ### 健康检查失败怎么办
 
 ```bash
-python3 etf_v7_threefactor.py --healthcheck
+python3 etf_threefactor.py --healthcheck
 ```
 
 逐项显示 ✅/❌：

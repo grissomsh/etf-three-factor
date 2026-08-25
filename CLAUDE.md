@@ -4,21 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-ETF 三因子监测系统 (three-factor ETF monitoring system) v7 — detects potential "national team" (中央汇金) buying signals in Chinese broad-based ETFs via a three-factor probability model. This repo is the source for a Claude Code skill: `SKILL.md` is the skill entry point, and the scripts are normally deployed to `~/.etf-skill/scripts/` in production (see README), so all workspace paths resolve to `~/.etf-skill/workspace` at runtime.
+ETF 三因子监测系统 (three-factor ETF monitoring system) — detects potential "national team" (中央汇金) buying signals in Chinese broad-based ETFs via a three-factor probability model. This repo is the source for a Claude Code skill: `SKILL.md` is the skill entry point, and the scripts are normally deployed to `~/.etf-skill/scripts/` in production (see README), so all workspace paths resolve to `~/.etf-skill/workspace` at runtime.
 
 ## Commands
 
 No build, test, or lint tooling — scripts are pure Python stdlib + akshare. Run directly:
 
 ```bash
-python3 scripts/etf_v7_threefactor.py                 # full pipeline: fetch → store → analyze → HTML → JSON
-python3 scripts/etf_v7_threefactor.py --date 2026-04-30  # analyze a specific historical date
-python3 scripts/etf_v7_threefactor.py --record        # collect today's shares into SQLite only
-python3 scripts/etf_v7_threefactor.py --stats         # print DB status
-python3 scripts/etf_v7_threefactor.py --healthcheck   # env check (akshare/data sources/DB/mail), exit 1 on failure
-python3 scripts/etf_v7_threefactor.py --backfill      # one-shot full 60-day share history backfill (no 20-day cap)
-python3 scripts/etf_v7_threefactor.py --query --days 7 [--code 510300]  # query signal history from SQLite
-bash setup.sh                                          # one-shot deploy: dirs, copy scripts, install akshare, email config
+python3 scripts/etf_threefactor.py                 # full pipeline: fetch → store → analyze → HTML → JSON
+python3 scripts/etf_threefactor.py --date 2026-04-30  # analyze a specific historical date
+python3 scripts/etf_threefactor.py --record        # collect today's shares into SQLite only
+python3 scripts/etf_threefactor.py --stats         # print DB status
+python3 scripts/etf_threefactor.py --healthcheck   # env check (akshare/data sources/DB), exit 1 on failure
+python3 scripts/etf_threefactor.py --backfill      # one-shot full 60-day share history backfill (no 20-day cap)
+python3 scripts/etf_threefactor.py --query --days 7 [--code 510300]  # query signal history from SQLite
+bash setup.sh                                          # one-shot deploy: dirs, copy scripts, install akshare
 python3 tests/test_events.py                           # event-anchor regression tests (offline fixtures; --list/--build)
 ```
 
@@ -29,13 +29,13 @@ python3 tests/test_events.py                           # event-anchor regression
 
 ## Architecture
 
-### Pipeline (`scripts/etf_v7_threefactor.py`, `main()`)
+### Pipeline (`scripts/etf_threefactor.py`, `main()`)
 
 1. Fetch 沪深300 index K-line (`fetch("sh000300", 60)`) — the market baseline for the direction factor.
 2. Load share history from `etf_shares_history.json`; if < 60 days, backfill from akshare (capped at 20 trading days per run, so a fresh install converges over several runs).
 3. Record today's shares into SQLite (live runs) or fetch the target date's shares (`--date` runs).
 4. For each ETF in the global `ETFS` dict (7 monitored ETFs): fetch K-line, run `analyze_all()` over the last ~35 days → per-day records with vp/dp/sp/cp.
-5. Build cross-ETF date signal summary, save results to SQLite, render the HTML dashboard, write JSON, optionally email.
+5. Save results to SQLite, render the interactive per-ETF HTML report, write JSON.
 
 ### Three-factor model
 
@@ -47,7 +47,7 @@ python3 tests/test_events.py                           # event-anchor regression
 - **Fallback**: when share data is unavailable for a day, `analyze_all()` degrades to two-factor `cp = vp×0.7 + dp×0.3` and sets `has_shares: false` — reports label that day "二因子". This happens on old history dates and when share data hasn't been published yet.
 - Signal thresholds: 🔴 ≥70, 🟡 50–70, ⚪ <50. The `SPECIAL` dict maps specific dates to manual tags shown in reports (e.g. "五一前") — dates are hardcoded and go stale; update for new holidays.
 
-### Data sources (v7)
+### Data sources
 
 | Data | Source | Notes |
 |------|--------|-------|
@@ -56,7 +56,7 @@ python3 tests/test_events.py                           # event-anchor regression
 | SZSE ETF shares | `akshare.fund_scale_daily_szse(start,end)` | date-range query; cached in `_SZSE_CACHE` |
 
 - Share data publishes ~19:00 on trading days; the fetchers search today → yesterday → earlier (up to 7 days back for SZSE) for the latest published value.
-- v6 (push2.eastmoney.com) is dead. `scripts/etf_v6_threefactor.py` is legacy (also writes to `~/.qclaw/workspace` and hardcodes emails) — do not modify it; v7 is the only active script.
+- The old v6 script (dead push2.eastmoney.com source) was removed — git history has it.
 
 ### Storage (`scripts/etf_data_store.py`)
 
@@ -75,4 +75,4 @@ The main script imports `ETFDataStore` via a sys.path shim at the top; share loa
 ## Notes
 
 - All HTTP uses a no-verify SSL context; network failures are swallowed and degrade data silently (`fetch()` returns `[]` on error), which cascades into the two-factor fallback rather than failing the run.
-- Output files land in the workspace: `ETF三因子分析-v7.html`, `ETF三因子分析-v7.json`, `etf_history.db`, `etf_shares_history.json`.
+- Output files land in the workspace: `ETF三因子分析.html`, `ETF三因子分析.json`, `etf_history.db`, `etf_shares_history.json`.

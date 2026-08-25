@@ -27,13 +27,13 @@ v6.1 → v7 升级（数据源替换）：
   - 自动回补历史数据（JSON历史不足60天时触发）
 
 使用方式：
-  python3 etf_v7_threefactor.py                # 默认：最近交易日
-  python3 etf_v7_threefactor.py --date 2026-04-30  # 指定日期
-  python3 etf_v7_threefactor.py --record         # 仅采集份额数据入库
-  python3 etf_v7_threefactor.py --stats          # 查看DB状态
-  python3 etf_v7_threefactor.py --healthcheck    # 环境健康检查
-  python3 etf_v7_threefactor.py --backfill       # 一次性回补份额历史
-  python3 etf_v7_threefactor.py --query --days 7 # 查询DB历史信号
+  python3 etf_threefactor.py                # 默认：最近交易日
+  python3 etf_threefactor.py --date 2026-04-30  # 指定日期
+  python3 etf_threefactor.py --record         # 仅采集份额数据入库
+  python3 etf_threefactor.py --stats          # 查看DB状态
+  python3 etf_threefactor.py --healthcheck    # 环境健康检查
+  python3 etf_threefactor.py --backfill       # 一次性回补份额历史
+  python3 etf_threefactor.py --query --days 7 # 查询DB历史信号
 """
 
 import json, urllib.request, ssl, os, sys, math, argparse
@@ -59,8 +59,8 @@ WORKSPACE = os.path.expanduser(os.environ.get("ETF_WORKSPACE", "~/.etf-skill/wor
 HTML_OUT = os.path.join(WORKSPACE, "ETF国家队监测-终版.html")
 JSON_OUT = os.path.join(WORKSPACE, "ETF国家队监测-终版.json")
 SHARES_OUT = os.path.join(WORKSPACE, "etf_shares_history.json")
-THREE_FACTOR_OUT = os.path.join(WORKSPACE, "ETF三因子分析-v7.json")
-THREE_FACTOR_HTML = os.path.join(WORKSPACE, "ETF三因子分析-v7.html")
+THREE_FACTOR_OUT = os.path.join(WORKSPACE, "ETF三因子分析.json")
+THREE_FACTOR_HTML = os.path.join(WORKSPACE, "ETF三因子分析.html")
 
 ETFS = {
     "510300": {"n": "华泰柏瑞沪深300ETF", "idx": "沪深300", "p": 5},
@@ -104,7 +104,7 @@ def fetch(code, limit=60):
 
 
 # ============================================================
-# 份额数据获取 (v7: akshare替代push2.eastmoney.com)
+# 份额数据获取 (akshare替代push2.eastmoney.com)
 # ============================================================
 # push2.eastmoney.com已长期中断(返回Empty reply from server)
 # 替代方案:
@@ -172,7 +172,7 @@ def _get_price_from_kline(code, target_date):
 
 def fetch_fund_shares(code, target_date=None):
     """
-    获取ETF份额数据 (v7: 使用 akshare SSE/SZSE API)
+    获取ETF份额数据 (使用 akshare SSE/SZSE API)
     
     参数:
         code: ETF代码 (如 '510300')
@@ -744,7 +744,7 @@ body{{background:#0a0f1a;color:#dfe6ef;font-family:-apple-system,"SF Pro Display
     <button id="btnAll" onclick="toggleAll()">📂 全部展开</button>
   </div>
   <div class="cards">{cards}</div>
-  <div class="ftr">ETF国家队资金监测 · 三因子模型 v7（量能50%+方向20%+份额30%）· 份额数据盘后约19:00发布 · 腾讯财经API + 上交所/深交所akshare · 点击卡片查看支撑数据</div>
+  <div class="ftr">ETF国家队资金监测 · 三因子模型（量能50%+方向20%+份额30%）· 份额数据盘后约19:00发布 · 腾讯财经API + 上交所/深交所akshare · 点击卡片查看支撑数据</div>
 </div>
 <script>
 function toggle(id){{var c=document.getElementById(id);if(c)c.classList.toggle('open')}}
@@ -901,7 +901,7 @@ def query_signals(days=7, code=None):
     rows = store.get_range(code=code, start_date=start, end_date=end)
     if not rows:
         print(f"  ℹ️ DB中 {start} ~ {end} 无记录")
-        print("  💡 提示: 先运行 python3 etf_v7_threefactor.py --record 或完整分析生成数据")
+        print("  💡 提示: 先运行 python3 etf_threefactor.py --record 或完整分析生成数据")
         return True
 
     print("=" * 60)
@@ -983,7 +983,7 @@ def main(target_date=None, record_only=False):
         return
 
     print("=" * 70)
-    print("🛡️ ETF国家队资金监测 v7 — 三因子模型 + 本地DB")
+    print("🛡️ ETF国家队资金监测 — 三因子模型 + 本地DB")
     print(f"   量能50% + 方向20% + 份额30%")
     if store:
         db_stats = store.get_stats()

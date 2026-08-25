@@ -1,8 +1,6 @@
-# etf-three-factor-v7
+# etf-three-factor
 
-三因子 ETF 国家队资金监测系统 v7，用来追踪国家队（中央汇金）在宽基 ETF 上的潜在操作信号。
-
-> v7 重大升级：`push2.eastmoney.com` 数据源长期中断，现已切换为 `akshare` 交易所官方数据接口，支持完整历史回溯。
+三因子 ETF 国家队资金监测系统，用来追踪国家队（中央汇金）在宽基 ETF 上的潜在操作信号。数据源：腾讯财经 K 线 + akshare 上交所/深交所官方份额接口（支持完整历史回溯）。
 
 ## Skill 描述
 
@@ -24,7 +22,7 @@
 
 - `SKILL.md`：skill 入口说明
 - `setup.sh`：一键部署脚本
-- `scripts/etf_v7_threefactor.py`：v7 主分析脚本
+- `scripts/etf_threefactor.py`：主分析脚本
 - `scripts/etf_data_store.py`：SQLite 数据存储模块
 - `references/etf_model.md`：三因子模型详解
 - `references/config.md`：配置与部署指南
@@ -37,20 +35,20 @@ bash setup.sh
 
 # 2. 运行分析
 cd scripts
-python etf_v7_threefactor.py
+python etf_threefactor.py
 ```
 
 常用命令：
 
-- `python etf_v7_threefactor.py --record`：仅采集份额数据
-- `python etf_v7_threefactor.py --stats`：查看数据库状态
-- `python etf_v7_threefactor.py --date 2026-04-30`：分析指定日期
+- `python etf_threefactor.py --record`：仅采集份额数据
+- `python etf_threefactor.py --stats`：查看数据库状态
+- `python etf_threefactor.py --date 2026-04-30`：分析指定日期
 
 运维命令：
 
-- `python etf_v7_threefactor.py --healthcheck`：环境健康检查（数据源/DB）
-- `python etf_v7_threefactor.py --backfill`：一次性回补全部份额历史
-- `python etf_v7_threefactor.py --query --days 7`：从本地 DB 查询历史信号
+- `python etf_threefactor.py --healthcheck`：环境健康检查（数据源/DB）
+- `python etf_threefactor.py --backfill`：一次性回补全部份额历史
+- `python etf_threefactor.py --query --days 7`：从本地 DB 查询历史信号
 
 ## 测试（事件锚点回归）
 
@@ -92,14 +90,7 @@ python3 tests/test_events.py --build    # 重建 fixtures（需 akshare + 网络
 - akshare `fund_etf_scale_sse(date)`：上交所 ETF 份额历史
 - akshare `fund_scale_daily_szse(start, end)`：深交所 ETF 份额历史
 
-这次升级后，份额数据已经支持历史回溯，不再依赖只能读实时值的旧接口。
-
-## v6 到 v7 的变化
-
-- 份额数据源从 `push2.eastmoney.com` 切换到 `akshare`
-- 支持上交所、深交所 ETF 份额完整历史回溯
-- 主脚本升级为 `scripts/etf_v7_threefactor.py`
-- 工作目录与输出路径统一到新的 `~/.etf-skill` 体系
+份额数据支持完整历史回溯（上交所/深交所官方接口），不再依赖只能读实时值的旧接口。
 
 ## 版权与来源
 

@@ -1,15 +1,13 @@
 ---
-name: etf-three-factor-v7
-description: 🛡️ 三因子ETF国家队资金监测系统 v7 — 追踪国家队（中央汇金）ETF操作信号。全新数据源（akshare交易所官方数据）、完整历史回溯、一键分析。支持：① 数据获取（腾讯财经K线 + akshare上交所/深交所份额）② 本地SQLite存档（分析结果+原始K线/份额）③ 三因子分析（量能P50% + 方向P20% + 份额P30%）④ 每ETF独立卡片的交互式HTML报告（点击查看支撑数据）。当用户需要运行ETF三因子分析、查询国家队信号、查看每日监测报告、或设置定时任务时使用。
+name: etf-three-factor
+description: 🛡️ 三因子ETF国家队资金监测系统 — 追踪国家队（中央汇金）ETF操作信号。数据源（腾讯财经K线 + akshare上交所/深交所份额）、完整历史回溯、一键分析。支持：① 数据获取（腾讯财经K线 + akshare上交所/深交所份额）② 本地SQLite存档（分析结果+原始K线/份额）③ 三因子分析（量能P50% + 方向P20% + 份额P30%）④ 每ETF独立卡片的交互式HTML报告（点击查看支撑数据）。当用户需要运行ETF三因子分析、查询国家队信号、查看每日监测报告、或设置定时任务时使用。
 ---
 
-# 🛡️ etf-three-factor-v7 — 三因子ETF监测系统
-
-> **v7 重大升级**: push2.eastmoney.com 数据源长期中断，完全替换为 akshare 交易所官方API，支持完整历史回溯。
+# 🛡️ etf-three-factor — 三因子ETF监测系统
 
 ## 核心文件
 
-- **`scripts/etf_v7_threefactor.py`** — 主分析脚本，一键流水线
+- **`scripts/etf_threefactor.py`** — 主分析脚本，一键流水线
 - **`scripts/etf_data_store.py`** — SQLite本地数据存储模块
 - **`setup.sh`** — 一键部署脚本（建目录/复制脚本/装akshare/配置邮箱）
 - **`references/etf_model.md`** — 三因子模型详细说明
@@ -22,7 +20,7 @@ description: 🛡️ 三因子ETF国家队资金监测系统 v7 — 追踪国家
 ### 一键完整运行（推荐）
 ```bash
 cd ~/.etf-skill/scripts
-python3 etf_v7_threefactor.py
+python3 etf_threefactor.py
 ```
 自动执行完整流水线：获取数据 → 存档 → 分析 → 生成HTML → 保存JSON
 
@@ -30,13 +28,13 @@ python3 etf_v7_threefactor.py
 
 | 功能 | 命令 | 说明 |
 |------|------|------|
-| 📊 完整分析 | `python3 etf_v7_threefactor.py` | 一键全流程 |
-| 📅 分析特定日期 | `python3 etf_v7_threefactor.py --date 2026-04-30` | 历史回溯分析 |
-| 📡 仅采集份额入库 | `python3 etf_v7_threefactor.py --record` | 只记录不含分析 |
-| 📦 查看数据库状态 | `python3 etf_v7_threefactor.py --stats` | 统计信息 |
-| 🩺 健康检查 | `python3 etf_v7_threefactor.py --healthcheck` | 环境自检(数据源/DB) |
-| 📡 完整回溯 | `python3 etf_v7_threefactor.py --backfill` | 一次性补满份额历史 |
-| 📋 信号查询 | `python3 etf_v7_threefactor.py --query --days 7` | 从DB查历史信号 |
+| 📊 完整分析 | `python3 etf_threefactor.py` | 一键全流程 |
+| 📅 分析特定日期 | `python3 etf_threefactor.py --date 2026-04-30` | 历史回溯分析 |
+| 📡 仅采集份额入库 | `python3 etf_threefactor.py --record` | 只记录不含分析 |
+| 📦 查看数据库状态 | `python3 etf_threefactor.py --stats` | 统计信息 |
+| 🩺 健康检查 | `python3 etf_threefactor.py --healthcheck` | 环境自检(数据源/DB) |
+| 📡 完整回溯 | `python3 etf_threefactor.py --backfill` | 一次性补满份额历史 |
+| 📋 信号查询 | `python3 etf_threefactor.py --query --days 7` | 从DB查历史信号 |
 
 ---
 
@@ -44,8 +42,8 @@ python3 etf_v7_threefactor.py
 
 | 文件 | 位置 | 说明 |
 |------|------|------|
-| HTML报告 | `~/.etf-skill/workspace/ETF三因子分析-v7.html` | 16:9可视化报告 |
-| JSON数据 | `~/.etf-skill/workspace/ETF三因子分析-v7.json` | 纯数据 |
+| HTML报告 | `~/.etf-skill/workspace/ETF三因子分析.html` | 16:9可视化报告 |
+| JSON数据 | `~/.etf-skill/workspace/ETF三因子分析.json` | 纯数据 |
 | SQLite DB | `~/.etf-skill/workspace/etf_history.db` | 历史数据本地存储 |
 | 份额历史 | `~/.etf-skill/workspace/etf_shares_history.json` | 份额JSON备份 |
 
@@ -67,7 +65,7 @@ python3 etf_v7_threefactor.py
 
 ---
 
-## 🔗 数据源（v7）
+## 🔗 数据源
 
 | 数据 | API | 回溯能力 |
 |------|-----|----------|
@@ -85,9 +83,9 @@ python3 etf_v7_threefactor.py
 
 ```bash
 openclaw cron add
-# name: "ETF三因子日报-v7"
+# name: "ETF三因子日报"
 # schedule: 30 16 * * 1-5 (Asia/Shanghai)
-# command: python3 ~/.etf-skill/scripts/etf_v7_threefactor.py
+# command: python3 ~/.etf-skill/scripts/etf_threefactor.py
 ```
 
 ---
@@ -113,15 +111,6 @@ openclaw cron add
 - 其余为 Python 标准库（json, urllib, sqlite3, argparse）
 
 ---
-
-## v6 → v7 升级说明
-
-| 项目 | v6 | v7 |
-|------|----|----|
-| 份额数据源 | push2.eastmoney.com（已挂） | akshare交易所官方 |
-| 历史回溯 | ❌ 不可回溯 | ✅ 完整回溯 |
-| 数据可靠性 | 依赖第三方实时接口 | 来自上交所/深交所 |
-| 首次运行 | 仅当天数据 | 自动回补20天历史 |
 
 更多详情:
 - 📐 模型数学原理 → `references/etf_model.md`

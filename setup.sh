@@ -23,9 +23,9 @@ echo "✅ 脚本目录: $SCRIPTS_DIR"
 echo "✅ 工作区:   $WORKSPACE_DIR"
 
 # 2. 复制脚本 (跳过 v6 遗留版本)
-cp "$SCRIPT_DIR/scripts/etf_v7_threefactor.py" "$SCRIPTS_DIR/"
+cp "$SCRIPT_DIR/scripts/etf_threefactor.py" "$SCRIPTS_DIR/"
 cp "$SCRIPT_DIR/scripts/etf_data_store.py" "$SCRIPTS_DIR/"
-echo "✅ 脚本已复制: etf_v7_threefactor.py + etf_data_store.py"
+echo "✅ 脚本已复制: etf_threefactor.py + etf_data_store.py"
 
 # 3. Python 环境 + akshare
 if ! command -v python3 >/dev/null 2>&1; then
@@ -58,9 +58,8 @@ echo ""
 echo "=================================================="
 echo "🎉 部署完成! 常用命令:"
 echo "  cd $SCRIPTS_DIR"
-echo "  $PY_BIN etf_v7_threefactor.py                   # 完整分析"
-echo "  $PY_BIN etf_v7_threefactor.py                   # 完整分析"
-echo "  $PY_BIN etf_v7_threefactor.py --healthcheck     # 环境自检 (推荐先跑)"
-echo "  $PY_BIN etf_v7_threefactor.py --backfill        # 一次性回补份额历史"
-echo "  $PY_BIN etf_v7_threefactor.py --query --days 7  # 查询历史信号"
+echo "  $PY_BIN etf_threefactor.py                   # 完整分析"
+echo "  $PY_BIN etf_threefactor.py --healthcheck     # 环境自检 (推荐先跑)"
+echo "  $PY_BIN etf_threefactor.py --backfill        # 一次性回补份额历史"
+echo "  $PY_BIN etf_threefactor.py --query --days 7  # 查询历史信号"
 echo "  定时任务建议: 工作日 16:30 运行完整分析 (见 references/config.md)"
