@@ -24,7 +24,7 @@ v6.1 → v7 升级（数据源替换）：
   - 上交所：fund_etf_scale_sse(date) - 按日期查询全市场SSE ETF份额
   - 深交所：fund_scale_daily_szse(start,end) - 按日期范围查询全市场SZSE ETF份额
   - 新增 fetch_history_shares_bulk() 批量回溯函数
-  - 自动回补历史数据（JSON历史不足60天时触发）
+  - 自动回补历史数据（份额历史不足60天时触发）
 
 使用方式：
   python3 etf_threefactor.py                # 默认：最近交易日
@@ -51,6 +51,8 @@ except ImportError:
     DATA_STORE_AVAILABLE = False
     print("⚠️ etf_data_store.py 未找到，本地数据存储功能不可用")
 
+from etf_data_store import ETFS  # 监控池单点定义于 etf_data_store.py, 缺失即部署错误
+
 ssl_ctx = ssl.create_default_context()
 ssl_ctx.check_hostname = False
 ssl_ctx.verify_mode = ssl.CERT_NONE
@@ -61,21 +63,6 @@ JSON_OUT = os.path.join(WORKSPACE, "ETF国家队监测-终版.json")
 SHARES_OUT = os.path.join(WORKSPACE, "etf_shares_history.json")
 THREE_FACTOR_OUT = os.path.join(WORKSPACE, "ETF三因子分析.json")
 THREE_FACTOR_HTML = os.path.join(WORKSPACE, "ETF三因子分析.html")
-
-ETFS = {
-    "510300": {"n": "华泰柏瑞沪深300ETF", "idx": "沪深300", "p": 5},
-    "510310": {"n": "易方达沪深300ETF",   "idx": "沪深300", "p": 5},
-    "510330": {"n": "华夏沪深300ETF",     "idx": "沪深300", "p": 5},
-    "159919": {"n": "嘉实沪深300ETF",     "idx": "沪深300", "p": 4},
-    "510050": {"n": "华夏上证50ETF",      "idx": "上证50",  "p": 4},
-    "510500": {"n": "华泰柏瑞中证500ETF",  "idx": "中证500",  "p": 3},
-    "512100": {"n": "南方中证1000ETF",    "idx": "中证1000", "p": 3},
-}
-
-PUSH2_MKT = {
-    "510300": "1", "510310": "1", "510330": "1", "159919": "0",
-    "510050": "1", "510500": "1", "512100": "1",
-}
 
 SPECIAL = {
     "2026-04-30": "五一前", "2026-05-06": "五一后",
@@ -295,9 +282,12 @@ def fetch_history_shares_bulk(dates_list):
         min_d = min(dates_list).replace('-', '')
         max_d = max(dates_list).replace('-', '')
         print(f"  📡 SZSE份额: {min_d}~{max_d}...")
+        want = set(dates_list)  # SZSE按范围返回, 只保留请求的日期, 避免写回多余日期
         data_map = _get_shares_szse_range(min_d, max_d)
         for d_str, codes in data_map.items():
             d = f"{d_str[:4]}-{d_str[4:6]}-{d_str[6:8]}"
+            if d not in want:
+                continue
             for code, shares_yi in codes.items():
                 if code in ETFS:
                     if d not in history:
@@ -875,7 +865,7 @@ def backfill_shares():
     print(f"  🎯 待回溯: {len(dates_to_fetch)}日 (交易日历共{len(all_dates)}日)")
     bulk = fetch_history_shares_bulk(dates_to_fetch)
     if not bulk:
-        print("  ⚠️ 未获取到任何数据 (akshare未安装或接口异常)")
+        print("  ⚠️ 待回溯日份额未获取（份额盘后约19:00发布，盘中/当日运行属正常；若持续失败则检查网络与akshare）")
         return False
 
     new_days = 0
@@ -1016,7 +1006,7 @@ def main(target_date=None, record_only=False):
     # 如果历史数据不足60天, 用akshare回溯补充
     need_dates = 60 - len(shares_history)
     if need_dates > 10:
-        print(f"  📡 JSON历史不足({len(shares_history)}日), 需补充{need_dates}日...")
+        print(f"  📡 份额历史不足({len(shares_history)}日), 需补充{need_dates}日...")
         # 获取过去N个交易日的日期列表
         all_dates = set()
         if idx_300:
@@ -1076,7 +1066,7 @@ def main(target_date=None, record_only=False):
             else:
                 print(f"    ⚠️ {code} {info['n'][:12]}: 份额数据暂未发布")
         if shares_collected == 0:
-            print("  ⚠️ 盘中运行：当日份额未发布(盘后约19:00)，今日信号仅基于盘中量价+昨日份额，建议19:30后重跑")
+            print("  ⚠️ 盘中运行：当日份额未发布(盘后约19:00)，今日信号退化为二因子，建议19:30后重跑")
         elif stale_dates:
             print(f"  ⚠️ 份额数据为最近发布日(盘中为{max(stale_dates)})，今日无当日份额，今日信号退化为二因子")
         _persist_shares(store, shares_history)

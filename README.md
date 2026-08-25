@@ -25,30 +25,43 @@
 - `scripts/etf_threefactor.py`：主分析脚本
 - `scripts/etf_data_store.py`：SQLite 数据存储模块
 - `references/etf_model.md`：三因子模型详解
-- `references/config.md`：配置与部署指南
 
 ## 快速开始
 
 ```bash
-# 1. 一键部署（建目录/复制脚本/装akshare/配置邮箱）
+# 1. 一键部署（建目录/复制脚本/装akshare）
 bash setup.sh
 
 # 2. 运行分析
 cd scripts
-python etf_threefactor.py
+python3 etf_threefactor.py
 ```
 
 常用命令：
 
-- `python etf_threefactor.py --record`：仅采集份额数据
-- `python etf_threefactor.py --stats`：查看数据库状态
-- `python etf_threefactor.py --date 2026-04-30`：分析指定日期
+- `python3 etf_threefactor.py --record`：仅采集份额数据
+- `python3 etf_threefactor.py --stats`：查看数据库状态
+- `python3 etf_threefactor.py --date 2026-04-30`：分析指定日期
 
 运维命令：
 
-- `python etf_threefactor.py --healthcheck`：环境健康检查（数据源/DB）
-- `python etf_threefactor.py --backfill`：一次性回补全部份额历史
-- `python etf_threefactor.py --query --days 7`：从本地 DB 查询历史信号
+- `python3 etf_threefactor.py --healthcheck`：环境健康检查（数据源/DB）
+- `python3 etf_threefactor.py --backfill`：一次性回补全部份额历史
+- `python3 etf_threefactor.py --query --days 7`：从本地 DB 查询历史信号
+
+## 自定义监控 ETF
+
+修改 `scripts/etf_data_store.py` 中的 `ETFS` 字典（监控池单点定义，主脚本从此处 import，只需改这一处）：
+
+```python
+ETFS = {
+    "510300": {"n": "华泰柏瑞沪深300ETF", "idx": "沪深300"},
+    # ↓ 新增ETF示例
+    "588000": {"n": "华夏科创50ETF",     "idx": "科创50"},
+}
+```
+
+新增的沪深 ETF（51/56 开头）由 akshare `fund_etf_scale_sse` 覆盖，深圳 ETF（159 开头）由 `fund_scale_daily_szse` 覆盖。
 
 ## 测试（事件锚点回归）
 

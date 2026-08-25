@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 
 DB_PATH = os.path.expanduser(os.environ.get("ETF_WORKSPACE", "~/.etf-skill/workspace")) + "/etf_history.db"
 
+# 监控池单点定义: etf_threefactor.py 从此处 import ETFS
 ETFS = {
     "510300": {"n": "华泰柏瑞沪深300ETF", "idx": "沪深300"},
     "510310": {"n": "易方达沪深300ETF",   "idx": "沪深300"},

@@ -55,7 +55,7 @@ python3 tests/test_events.py                           # event-anchor regression
 | SSE ETF shares | `akshare.fund_etf_scale_sse(date)` | per-date full-market query; results cached in `_SSE_CACHE` |
 | SZSE ETF shares | `akshare.fund_scale_daily_szse(start,end)` | date-range query; cached in `_SZSE_CACHE` |
 
-- Share data publishes ~19:00 on trading days; the fetchers search today → yesterday → earlier (up to 7 days back for SZSE) for the latest published value.
+- Share data publishes ~19:00 on trading days; the fetchers search for the latest published value (SSE retries today → -2 days, SZSE up to 7 days back). The report badge treats <15:30 as intraday (K-line not final), 15:30–19:00 as shares-not-published (two-factor), ≥19:00 as complete.
 - The old v6 script (dead push2.eastmoney.com source) was removed — git history has it.
 
 ### Storage (`scripts/etf_data_store.py`)
