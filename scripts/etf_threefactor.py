@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-ETF国家队资金监测流水线 v6.1 — 三因子模型 + 本地SQLite数据存储
-量能概率 50% + 方向概率 20% + 份额概率 30%
+ETF国家队资金监测流水线 — 三因子模型 + 本地SQLite数据存储
+量能分 50% + 方向分 20% + 份额分 30%
 
 v5 → v6 升级：
   - 新增份额因子（sprob），权重30%，捕捉一级市场申购
@@ -349,7 +349,7 @@ def get_historical_share(code, target_date, history):
 # ============================================================
 
 def vprob(r):
-    """量能概率（原权重70%→现50%）"""
+    """量能分（权重50%，启发式评分非校准概率）"""
     if r < 0.5: return max(0, r / 0.5 * 5)
     if r < 1.0: return 5 + (r - 0.5) / 0.5 * 12
     if r < 1.3: return 17 + (r - 1) / 0.3 * 18
@@ -361,7 +361,7 @@ def vprob(r):
 
 
 def _dprob_parts(chg, t5_etf, t5_idx, vr, idx_chg):
-    """方向概率四维分值分解 (f1~f4 + 普涨折扣), 供报告展示支撑数据"""
+    """方向分四维分值分解 (f1~f4 + 普涨折扣), 供报告展示支撑数据"""
     rally_discount = 1.0
     if idx_chg > 2.0: rally_discount = 0.60
     elif idx_chg > 1.5: rally_discount = 0.70
@@ -407,7 +407,7 @@ def _dprob_parts(chg, t5_etf, t5_idx, vr, idx_chg):
 
 
 def dprob(chg, t5_etf, t5_idx, vr, idx_chg):
-    """方向概率（原权重30%→现20%）"""
+    """方向分（权重20%）"""
     f1, f2, f3, f4, rally_discount = _dprob_parts(chg, t5_etf, t5_idx, vr, idx_chg)
     raw = f1 * 0.4 + f2 * 0.3 + f3 * 0.2 + f4 * 0.1
     return round(raw * rally_discount, 1)
@@ -415,10 +415,10 @@ def dprob(chg, t5_etf, t5_idx, vr, idx_chg):
 
 def sprob(share_delta_pct):
     """
-    份额概率（权重30%）【v6新增】
+    份额分（权重30%）
     基于日份额变化 / 前日份额
 
-    份额变动比 → 份额概率（连续分段，0% 处为近中性 15 分）：
+    份额变动比 → 份额分（连续分段，0% 处为近中性 15 分）：
       >10% → 95      |  5~10% → 80~95  |  3~5% → 65~80  |  1~3% → 45~65
       0~1% → 15~45   |  -1~0% → 10~15  |  -5~-1% → 5~10 |  <-5% → 0~5
     映射整体偏向申购（模型只识别增持，减持信号见 etf_model.md 局限性）
@@ -467,7 +467,7 @@ def analyze_all(data, idx_d, shares_map, target_date, code, days=35):
         vp = vprob(vr)
         dp = dprob(chg, t5, round(t5i, 2), vr, idchg)
 
-        # 三因子：份额概率 (每只ETF用其自身的份额变化)
+        # 三因子：份额分 (每只ETF用其自身的份额变化)
         sp = None
         share_delta_pct = None
         share_delta_yi = None
@@ -477,7 +477,7 @@ def analyze_all(data, idx_d, shares_map, target_date, code, days=35):
             share_delta_yi = info.get("delta_yi")
             sp = sprob(share_delta_pct)
 
-        # 三因子综合概率
+        # 三因子综合信号分
         if sp is not None:
             cp = round(vp * 0.5 + dp * 0.2 + sp * 0.3, 1)
         else:
@@ -550,10 +550,10 @@ def _sparkline(hist, width=560, height=56):
         if c >= 50:
             color = "#ef4444" if c >= 70 else "#f59e0b"
             ticks += (f'<line x1="{x(i):.1f}" y1="{y(c)-3:.1f}" x2="{x(i):.1f}" y2="{y(c)+3:.1f}" '
-                      f'stroke="{color}" stroke-width="2"><title>{h["d"]} CP{c:.0f}%</title></line>')
+                      f'stroke="{color}" stroke-width="2"><title>{h["d"]} 信号分{c:.0f}</title></line>')
     last = pts[-1]
     txt = (f'<text x="{x(n-1):.1f}" y="{max(8, y(last)-4):.1f}" font-size="9" '
-           f'fill="#7dd3fc" text-anchor="end">{last:.0f}%</text>')
+           f'fill="#7dd3fc" text-anchor="end">{last:.0f}</text>')
     return (f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none">'
             f'{l70}{l50}<polyline points="{poly}" fill="none" stroke="#38bdf8" stroke-width="1.5"/>'
             f'{ticks}{txt}</svg>')
@@ -619,24 +619,24 @@ def gen_html(all_hist, shares_data, target_date):
         tag_html = f'<span class="tag">{rec["tag"]}</span>' if rec.get("tag") else ""
 
         # 因子概率条 + 历史趋势 sparkline
-        factors = (_factor_bar("量能P", vp, "#38bdf8") +
-                   _factor_bar("方向P", dp, "#818cf8") +
-                   _factor_bar("份额P", sp, "#f59e0b"))
+        factors = (_factor_bar("量能分", vp, "#38bdf8") +
+                   _factor_bar("方向分", dp, "#818cf8") +
+                   _factor_bar("份额分", sp, "#f59e0b"))
         spark = _sparkline(hist[-40:])
 
         # 因子支撑（展开明细）
-        v_txt = f"量能：倍量 {vr:.2f}x = 当日 {rec['v']:.0f}万 ÷ 20日均 {rec['vma']:.0f}万 → 量能P {vp:.0f}%"
+        v_txt = f"量能分：倍量 {vr:.2f}x = 当日 {rec['v']:.0f}万 ÷ 20日均 {rec['vma']:.0f}万 → 量能分 {vp:.0f}"
         f1, f2, f3, f4, disc = _dprob_parts(chg, rec["t5"], rec["t5i"], vr, rec["idx_chg"])
         raw = f1 * 0.4 + f2 * 0.3 + f3 * 0.2 + f4 * 0.1
-        d_txt = f"方向：{dp:.0f}% = (f1[{f1:.0f}]×0.4 + f2[{f2:.0f}]×0.3 + f3[{f3:.0f}]×0.2 + f4[{f4:.0f}]×0.1)"
+        d_txt = f"方向分：{dp:.0f} = (f1[{f1:.0f}]×0.4 + f2[{f2:.0f}]×0.3 + f3[{f3:.0f}]×0.2 + f4[{f4:.0f}]×0.1)"
         if disc < 1:
             d_txt += f" ×{disc:.2f} 普涨折扣 = {raw * disc:.1f}"
         else:
             d_txt += f" = {raw:.1f}"
         if sp is not None:
-            sp_txt = f"份额：{sp:.0f}% ← 份额日变 {rec['share_delta_pct']:+.2f}%（{_sprob_band(rec['share_delta_pct'])}）"
+            sp_txt = f"份额分：{sp:.0f} ← 份额日变 {rec['share_delta_pct']:+.2f}%（{_sprob_band(rec['share_delta_pct'])}）"
         else:
-            sp_txt = "份额：不可用（二因子退化: cp = 量能×0.7 + 方向×0.3）"
+            sp_txt = "份额：不可用（二因子退化: 信号分 = 量能分×0.7 + 方向分×0.3）"
 
         # 近40日逐日明细表 (倒序, 最新在上)
         rows = ""
@@ -649,13 +649,13 @@ def gen_html(all_hist, shares_data, target_date):
             else:
                 s = "⚪"
             sh = f'{h["share_delta_pct"]:+.2f}%' if h["share_delta_pct"] is not None else "-"
-            spv = f'{h["sp"]:.0f}%' if h["sp"] is not None else "-"
+            spv = f'{h["sp"]:.0f}' if h["sp"] is not None else "-"
             cp_col = "#ef4444" if h["cp"] >= 70 else ("#f59e0b" if h["cp"] >= 50 else "#cbd5e1")
             t = f' <span class="tag">{h["tag"]}</span>' if h.get("tag") else ""
             rows += (f'<tr><td>{h["d"][5:]}{t}</td><td>{h["c"]:.3f}</td>'
                      f'<td style="color:{ch}">{h["chg"]:+.2f}%</td><td>{h["vr"]:.2f}x</td>'
-                     f'<td>{sh}</td><td>{h["vp"]:.0f}%</td><td>{h["dp"]:.0f}%</td>'
-                     f'<td>{spv}</td><td style="color:{cp_col};font-weight:700">{h["cp"]:.0f}%</td><td>{s}</td></tr>')
+                     f'<td>{sh}</td><td>{h["vp"]:.0f}</td><td>{h["dp"]:.0f}</td>'
+                     f'<td>{spv}</td><td style="color:{cp_col};font-weight:700">{h["cp"]:.0f}</td><td>{s}</td></tr>')
 
         card_id = f"card-{code}"
         cards += f'''<div class="card" id="{card_id}">
@@ -665,7 +665,7 @@ def gen_html(all_hist, shares_data, target_date):
   </div>
   <div class="c-factors">{factors}</div>
   <div class="c-spark">{spark}</div>
-  <div class="c-action {action_cls}">综合概率 {cp:.0f}% → {action_txt}{sell_hints}</div>
+  <div class="c-action {action_cls}">信号分 {cp:.0f} → {action_txt}{sell_hints}</div>
   <div class="c-btn" onclick="toggle('{card_id}')">▶ 查看支撑数据（点击卡片任意处亦可）</div>
   <div class="c-detail" onclick="event.stopPropagation()">
     <div class="d-support">
@@ -673,7 +673,7 @@ def gen_html(all_hist, shares_data, target_date):
       <div>🔍 {d_txt}</div>
       <div>🔍 {sp_txt}</div>
     </div>
-    <table class="d-table"><thead><tr><th>日期</th><th>收盘</th><th>涨跌</th><th>倍量</th><th>份额日变</th><th>量P</th><th>方P</th><th>份P</th><th>CP</th><th>信号</th></tr></thead><tbody>{rows}</tbody></table>
+    <table class="d-table"><thead><tr><th>日期</th><th>收盘</th><th>涨跌</th><th>倍量</th><th>份额日变</th><th>量能分</th><th>方向分</th><th>份额分</th><th>信号分</th><th>信号</th></tr></thead><tbody>{rows}</tbody></table>
   </div>
 </div>'''
 
@@ -769,7 +769,7 @@ def _trunc(s, width):
     return out
 
 def fmt_pct(v):
-    return f"{v:.0f}%" if isinstance(v, (int, float)) else "-"
+    return f"{v:.0f}" if isinstance(v, (int, float)) else "-"
 
 def fmt_chg(v):
     return f"{v:+.2f}%" if isinstance(v, (int, float)) else "-"
@@ -902,7 +902,7 @@ def query_signals(days=7, code=None):
     RED, GREEN, RESET = "\033[91m", "\033[92m", "\033[0m"
     header = " ".join([
         _pad("日期", 10), _pad("代码", 6), _pad("名称", 18),
-        f"{'涨跌':>8}", f"{'倍量':>7}", f"{'量能P':>6}", f"{'方向P':>6}", f"{'份额P':>6}", f"{'CP':>5}", "信号",
+        f"{'涨跌':>8}", f"{'倍量':>7}", f"{'量能分':>7}", f"{'方向分':>7}", f"{'份额分':>7}", f"{'分数':>5}", "信号",
     ])
     print("  " + header)
     print("  " + "-" * (_disp_width(header) + 4))
@@ -1155,11 +1155,11 @@ def main(target_date=None, record_only=False):
             "delta_pct": sh_on_target.get("delta_pct"),
         }
 
-        sp_str = f"份额P:{l['sp']:.0f}%" if l.get("has_shares") else "份额P:N/A"
+        sp_str = f"份额分:{l['sp']:.0f}" if l.get("has_shares") else "份额分:N/A"
         s = "🔥" if l["cp"] >= 70 else ("⚠️" if l["cp"] >= 50 else "○")
         model_flag = "三因子" if l.get("has_shares") else "二因子"
         t = f"[{l['tag']}]" if l.get("tag") else ""
-        print(f"    {s} {l['d']} {t} | {l['chg']:+.2f}% | {l['v']:.0f}万({l['vr']:.2f}x) | 量能P:{l['vp']:.0f}% 方向P:{l['dp']:.0f}% {sp_str} → CP:{l['cp']:.0f}% [{model_flag}]")
+        print(f"    {s} {l['d']} {t} | {l['chg']:+.2f}% | {l['v']:.0f}万({l['vr']:.2f}x) | 量能分:{l['vp']:.0f} 方向分:{l['dp']:.0f} {sp_str} → 信号分:{l['cp']:.0f} [{model_flag}]")
 
     # 5. 重要信号回溯 (生成 actual_date)
     print("\n" + "=" * 70)
@@ -1172,7 +1172,7 @@ def main(target_date=None, record_only=False):
             if d not in date_sig:
                 date_sig[d] = {"total": 0, "high": 0, "mid": 0, "codes": []}
             date_sig[d]["total"] += 1
-            if h["cp"] >= 70: date_sig[d]["high"] += 1; date_sig[d]["codes"].append(f"{code}({h['cp']:.0f}%)")
+            if h["cp"] >= 70: date_sig[d]["high"] += 1; date_sig[d]["codes"].append(f"{code}({h['cp']:.0f})")
             elif h["cp"] >= 50: date_sig[d]["mid"] += 1
     sigs = [(d, v) for d, v in date_sig.items() if v["high"] >= 2 or v["high"] + v["mid"] >= 4]
     sigs.sort(key=lambda x: x[0], reverse=True)
@@ -1251,7 +1251,7 @@ def main(target_date=None, record_only=False):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="ETF三因子监测 v6.1")
+    parser = argparse.ArgumentParser(description="ETF三因子监测 — 国家队增持信号分析")
     parser.add_argument("--date", type=str, default=None,
                         help="分析日期 (YYYY-MM-DD)，默认最近交易日")
     parser.add_argument("--record", action="store_true",

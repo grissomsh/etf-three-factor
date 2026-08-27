@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-ETF 三因子监测系统 (three-factor ETF monitoring system) — detects potential "national team" (中央汇金) buying signals in Chinese broad-based ETFs via a three-factor probability model. This repo is the source for a Claude Code skill: `SKILL.md` is the skill entry point, and the scripts are normally deployed to `~/.etf-skill/scripts/` in production (see README), so all workspace paths resolve to `~/.etf-skill/workspace` at runtime.
+ETF 三因子监测系统 (three-factor ETF monitoring system) — detects potential "national team" (中央汇金) buying signals in Chinese broad-based ETFs via a heuristic three-factor scoring model (信号分, not a calibrated probability). This repo is the source for a Claude Code skill: `SKILL.md` is the skill entry point, and the scripts are normally deployed to `~/.etf-skill/scripts/` in production (see README), so all workspace paths resolve to `~/.etf-skill/workspace` at runtime.
 
 ## Commands
 
@@ -20,11 +20,14 @@ python3 scripts/etf_threefactor.py --backfill      # one-shot full 60-day share 
 python3 scripts/etf_threefactor.py --query --days 7 [--code 510300]  # query signal history from SQLite
 bash setup.sh                                          # one-shot deploy: dirs, copy scripts, install akshare
 python3 tests/test_events.py                           # event-anchor regression tests (offline fixtures; --list/--build)
+python3 tests/sensitivity.py                           # factor-weight simplex scan over those fixtures (--step/--top)
 ```
 
 - Only external dependency: akshare (everything else is stdlib).
 - `scripts/etf_data_store.py` also runs standalone to print DB stats.
-- There are no tests; verify a change by running the pipeline and reading the per-ETF summary lines (CP value, 三因子/二因子 model flag).
+- Verify model changes with `tests/test_events.py` — offline fixtures built from real national-team buying events: 4 positive anchors (2023-10 first announcement, 2024-02 scope expansion, 2025-04 intraday announcement, 2026-07 record week) + 4 data-driven calm-week negative anchors (2019-01, 2021-04, 2023-02, 2026-08). Expectations come from public facts: investigate failures (source drift / model blind spot) instead of loosening them. Rebuild fixtures with `--build [--anchor id]` (needs network; each anchor sweeps ~65 SSE share queries).
+- `tests/sensitivity.py` scans the factor-weight simplex over those fixtures (feasibility boundary + separation margin). Known finding at 8 windows: baseline (0.5/0.2/0.3) is feasible and sits near the top of the margin ranking (+11.9), squeezed between two opposite constraints — lowering w_vol below 0.5 (or shrinking w_dir) trips neg-2021-04 (late-stage bubble-era broad share drift scores one ETF ≥70), while raising w_dir to 0.25 trips ev-2026-07. Don't touch weights without new event anchors.
+- Smoke-test report/pipeline changes by running the pipeline and reading the per-ETF summary lines (信号分 value, 三因子/二因子 model flag).
 - **On this machine**: Homebrew Python 3.14 is PEP 668-externally-managed, so `pip3 install akshare` fails. setup.sh falls back to a venv at `~/.etf-skill/venv` (installed via the Aliyun PyPI mirror) — run scripts with `~/.etf-skill/venv/bin/python`.
 
 ## Architecture
@@ -32,9 +35,9 @@ python3 tests/test_events.py                           # event-anchor regression
 ### Pipeline (`scripts/etf_threefactor.py`, `main()`)
 
 1. Fetch 沪深300 index K-line (`fetch("sh000300", 60)`) — the market baseline for the direction factor.
-2. Load share history from `etf_shares_history.json`; if < 60 days, backfill from akshare (capped at 20 trading days per run, so a fresh install converges over several runs).
-3. Record today's shares into SQLite (live runs) or fetch the target date's shares (`--date` runs).
-4. For each ETF in the global `ETFS` dict (7 monitored ETFs): fetch K-line, run `analyze_all()` over the last ~35 days → per-day records with vp/dp/sp/cp.
+2. Load share history — SQLite `shares_raw` first (full accumulation), falling back to the capped 60-day JSON; if < 60 days, backfill from akshare (capped at 20 trading days per run, so a fresh install converges over several runs).
+3. Record today's shares into SQLite under their published `data_date` (live runs) or fetch the target date's shares (`--date` runs).
+4. For each ETF in `ETFS`: fetch K-line, upsert it into `klines_raw`, run `analyze_all()` over the last 60 bars (~39 trading days) → per-day records with vp/dp/sp/cp.
 5. Save results to SQLite, render the interactive per-ETF HTML report, write JSON.
 
 ### Three-factor model
@@ -45,7 +48,7 @@ python3 tests/test_events.py                           # event-anchor regression
 - **方向 dp (20%)** — `dprob()`: weighted blend of 4 sub-dimensions (f1 当日行情 40%, f2 ETF vs 沪深300 超额 30%, f3 前5日大盘走势 20%, f4 尾盘固定35% 10%), then a rally discount (×0.6–0.9) when the index rose sharply.
 - **份额 sp (30%)** — `sprob()`: map of day-over-day share change % (一级市场申购/赎回) to probability. Per-ETF: `analyze_all(..., code)` uses each ETF's own share change (a 2026-08 fix — it previously used 510300's shares for every ETF).
 - **Fallback**: when share data is unavailable for a day, `analyze_all()` degrades to two-factor `cp = vp×0.7 + dp×0.3` and sets `has_shares: false` — reports label that day "二因子". This happens on old history dates and when share data hasn't been published yet.
-- Signal thresholds: 🔴 ≥70, 🟡 50–70, ⚪ <50. The `SPECIAL` dict maps specific dates to manual tags shown in reports (e.g. "五一前") — dates are hardcoded and go stale; update for new holidays.
+- Signal thresholds: 🔴 ≥70, 🟡 50–70, ⚪ <50. Displayed as **信号分** (with 量能分/方向分/份额分) in the report and CLI — a heuristic strength score in 0–100, *not* a calibrated probability. Internal names keep the legacy `_prob` vocabulary (`vprob/dprob/sprob`, `cp`, DB columns `composite_prob` etc.); the mismatch with display wording is intentional — don't rename storage schema. The `SPECIAL` dict maps specific dates to manual tags shown in reports (e.g. "五一前") — dates are hardcoded and go stale; update for new holidays.
 
 ### Data sources
 
@@ -70,7 +73,7 @@ The main script imports `ETFDataStore` via a sys.path shim at the top; share loa
 ### Configuration (env vars, defaults in code)
 
 - `ETF_WORKSPACE` — output dir (default `~/.etf-skill/workspace`).
-- To monitor different ETFs, edit the `ETFS` dict — it's duplicated in `etf_data_store.py`, keep both in sync. Exchange is inferred from the code prefix (159/16 → SZSE, everything else → SSE).
+- To monitor different ETFs, edit the `ETFS` dict in `scripts/etf_data_store.py` — the main script imports it from there (single source of truth). Exchange is inferred from the code prefix (159/16 → SZSE, everything else → SSE).
 
 ## Notes
 
