@@ -48,6 +48,7 @@ python3 etf_threefactor.py
 - `python3 etf_threefactor.py --healthcheck`：环境健康检查（数据源/DB）
 - `python3 etf_threefactor.py --backfill`：一次性回补全部份额历史
 - `python3 etf_threefactor.py --query --days 7`：从本地 DB 查询历史信号
+- `python3 etf_threefactor.py --etf "515880:通信ETF"`：临时挂载额外 ETF 分析（不进默认池；行业 ETF 的方向分基于宽基护盘假设，信号需自行打折，申赎/量能数据视图仍然有效）
 
 ## 自定义监控 ETF
 

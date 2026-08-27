@@ -18,6 +18,7 @@ python3 scripts/etf_threefactor.py --stats         # print DB status
 python3 scripts/etf_threefactor.py --healthcheck   # env check (akshare/data sources/DB), exit 1 on failure
 python3 scripts/etf_threefactor.py --backfill      # one-shot full 60-day share history backfill (no 20-day cap)
 python3 scripts/etf_threefactor.py --query --days 7 [--code 510300]  # query signal history from SQLite
+python3 scripts/etf_threefactor.py --etf "CODE[:name[:index]]"      # ad-hoc attach extra ETF (data view only; direction factor assumes broad-based rescue)
 bash setup.sh                                          # one-shot deploy: dirs, copy scripts, install akshare
 python3 tests/test_events.py                           # event-anchor regression tests (offline fixtures; --list/--build)
 python3 tests/sensitivity.py                           # factor-weight simplex scan over those fixtures (--step/--top)

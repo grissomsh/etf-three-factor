@@ -39,6 +39,7 @@ python3 etf_threefactor.py
 | 健康检查       | `python3 etf_threefactor.py --healthcheck`     | 环境自检(数据源/DB) |
 | 完整回溯       | `python3 etf_threefactor.py --backfill`        | 一次性补满份额历史  |
 | 信号查询       | `python3 etf_threefactor.py --query --days 7`  | 从DB查历史信号      |
+| 临时分析其他ETF | `python3 etf_threefactor.py --etf "515880:通信ETF"` | 不进默认池；行业ETF信号需自行打折 |
 
 ---
 

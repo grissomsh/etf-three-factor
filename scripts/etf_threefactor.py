@@ -970,6 +970,25 @@ def record_shares_only():
     print(f"   含份额: {stats['records_with_shares']}条")
 
 
+def _register_extra_etfs(specs):
+    """--etf CODE[:名称[:指数]] — 运行期临时挂载额外 ETF, 不改动默认监控池
+    行业/主题 ETF 可看量能与申赎异动, 但方向分(护盘假设)对行业轮动无解释力,
+    🔴/🟡 结论需自行打折 — 见 references/etf_model.md 局限性"""
+    if not specs:
+        return
+    merged = dict(ETFS)
+    for s in specs:
+        parts = (s.split(":", 2) + ["", "", ""])[:3]
+        code = parts[0].strip()
+        if not code.isdigit() or len(code) != 6:
+            print(f"⚠️ 忽略非法代码: {s!r}")
+            continue
+        merged[code] = {"n": parts[1] or f"ETF {code}",
+                        "idx": parts[2] or "自定义"}
+        print(f"➕ 临时挂载 {code} ({merged[code]['n']}/{merged[code]['idx']})")
+    globals()["ETFS"] = merged
+
+
 def main(target_date=None, record_only=False):
     # 初始化 DB
     store = ETFDataStore() if DATA_STORE_AVAILABLE else None
@@ -1272,9 +1291,12 @@ if __name__ == "__main__":
                         help="从本地DB查询历史信号，不做分析")
     parser.add_argument("--days", type=int, default=7,
                         help="--query 回溯天数 (默认7)")
+    parser.add_argument("--etf", action="append", default=[], metavar="CODE[:名称[:指数]]",
+                        help="临时挂载额外监控 ETF（可多次）, 行业ETF信号需自行打折")
     parser.add_argument("--code", type=str, default=None,
                         help="--query 过滤ETF代码")
     args = parser.parse_args()
+    _register_extra_etfs(args.etf)
 
     if args.stats:
         if not DATA_STORE_AVAILABLE:
