@@ -415,24 +415,30 @@ def dprob(chg, t5_etf, t5_idx, vr, idx_chg):
 
 def sprob(share_delta_pct):
     """
-    份额分（权重30%）
+    份额分（权重30%）— VAR-C 映射（2026-08-27 落地，经8锚点 gate 验证零检测损失）
     基于日份额变化 / 前日份额
 
+    分位依据见 references/calibration.md §3：±1% 档在全市场中超越比例约 11%~13%，
+    现行 45~65 分属噪声区；VAR-C 仅压低该区间与中段上沿。
+    gate 实测：scripts/calibrate.py gate 三变体下全部锚点判定一致。
+
     份额变动比 → 份额分（连续分段，0% 处为近中性 15 分）：
-      >10% → 95      |  5~10% → 80~95  |  3~5% → 65~80  |  1~3% → 45~65
-      0~1% → 15~45   |  -1~0% → 10~15  |  -5~-1% → 5~10 |  <-5% → 0~5
+      >10% → 93     |  5~10% → 80~93  |  3~5% → 60~80 |  1~3% → 40~60
+      0~1% → 15~40  |  -1~0% → 11~15  |  -5~-1% → 7~11
+      -10~-5% → 4~7 |  <-10% → 4
     映射整体偏向申购（模型只识别增持，减持信号见 etf_model.md 局限性）
     """
     if share_delta_pct is None:
         return None  # 数据不可用
-    if share_delta_pct > 10:    return 95
-    elif share_delta_pct > 5:   return 80 + (share_delta_pct - 5) / 5 * 15
-    elif share_delta_pct > 3:   return 65 + (share_delta_pct - 3) / 2 * 15
-    elif share_delta_pct > 1:   return 45 + (share_delta_pct - 1) / 2 * 20
-    elif share_delta_pct > 0:   return 15 + share_delta_pct * 30
-    elif share_delta_pct > -1:  return 10 + (share_delta_pct + 1) * 5
-    elif share_delta_pct > -5:  return 5 + (share_delta_pct + 5) / 4 * 5
-    else:                       return max(0, 5 + (share_delta_pct + 5) / 5 * 5)
+    if share_delta_pct > 10:    return 93
+    elif share_delta_pct > 5:   return 80 + (share_delta_pct - 5) / 5 * 13
+    elif share_delta_pct > 3:   return 60 + (share_delta_pct - 3) / 2 * 20
+    elif share_delta_pct > 1:   return 40 + (share_delta_pct - 1) / 2 * 20
+    elif share_delta_pct > 0:   return 15 + share_delta_pct * 25
+    elif share_delta_pct > -1:  return 11 + (share_delta_pct + 1) * 4
+    elif share_delta_pct > -5:  return 7 + (share_delta_pct + 5) / 4 * 4
+    elif share_delta_pct > -10: return 4 + (share_delta_pct + 10) / 5 * 3
+    else:                       return 4.0
 
 
 def analyze_all(data, idx_d, shares_map, target_date, code, days=35):

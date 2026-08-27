@@ -1,6 +1,6 @@
 ---
 name: etf-three-factor
-description: 三因子ETF国家队资金监测系统 — 追踪国家队（中央汇金）ETF操作信号。数据获取（腾讯财经K线 + akshare上交所/深交所份额）、本地SQLite存档（分析结果+原始K线/份额）、三因子分析（信号分=量能分×50%+方向分×20%+份额分×30%）、每ETF独立卡片的交互式HTML报告。当用户需要运行ETF三因子分析、查询国家队信号、查看每日监测报告、或设置定时任务时使用。
+description: 三因子ETF国家队资金监测系统 — 追踪国家队（中央汇金）ETF操作信号。数据获取（腾讯财经K线 + akshare上交所/深交所份额）、本地SQLite存档（分析结果+原始K线/份额）、三因子分析（信号分=量能分×50%+方向分×20%+份额分×30%）、每ETF独立卡片的交互式HTML报告。当用户需要运行ETF三因子分析、查询国家队信号、查看每日监测报告、设置定时任务时使用；也适用于模型相关的校准、权重评估与参数变更（须走模型迭代门禁流程）。
 ---
 
 # etf-three-factor — 三因子ETF监测系统
@@ -9,8 +9,11 @@ description: 三因子ETF国家队资金监测系统 — 追踪国家队（中�
 
 - **`scripts/etf_threefactor.py`** — 主分析脚本，一键流水线
 - **`scripts/etf_data_store.py`** — SQLite本地数据存储模块
+- **`scripts/calibrate.py`** — 分位数校准工具（fetch/vr/report/gate）
 - **`setup.sh`** — 一键部署脚本（建目录/复制脚本/装akshare）
+- **`tests/`** — 事件锚点回归 + 权重敏感性扫描 + 校准数据集
 - **`references/etf_model.md`** — 三因子模型详细说明
+- **`references/model_calibration_runbook.md`** — 模型迭代 Runbook（受控变更流程）
 
 ---
 
@@ -56,8 +59,8 @@ python3 etf_threefactor.py
 信号分 = 量能分 × 50% + 方向分 × 20% + 份额分 × 30%
 ```
 
-| 因子     | 权重 | 来源          | 说明                         |
-| -------- | ---- | ------------- | ---------------------------- |
+| 因子   | 权重 | 来源          | 说明                         |
+| ------ | ---- | ------------- | ---------------------------- |
 | 量能分 | 50%  | 腾讯财经K线   | 日成交量 ÷ 20日均量          |
 | 方向分 | 20%  | 腾讯财经K线   | 护盘特征：逆市+超额+前几日跌 |
 | 份额分 | 30%  | akshare交易所 | 日份额变化检测一级市场申赎   |
@@ -110,6 +113,22 @@ openclaw cron add
 - Python 3.7+
 - **akshare** — `pip3 install -i https://mirrors.aliyun.com/pypi/simple/ akshare`（国内用阿里云镜像；PEP 668 受限环境由 setup.sh 自动创建 venv）
 - 其余为 Python 标准库（json, urllib, sqlite3, argparse）
+
+---
+
+## 模型迭代（可复现流程）
+
+触及模型常数（映射/权重/阈值）的改动必须走 Runbook 门禁，禁止跳步：
+
+```bash
+python3 scripts/calibrate.py fetch     # 1. 全市场数据集（断点续传, 缓存在 tests/data/calib/）
+python3 scripts/calibrate.py report    # 2. 经验分位报告 → references/calibration.md
+python3 scripts/calibrate.py gate      # 3. 候选映射离线试跑（不动主代码）
+python3 tests/test_events.py           # 4. 落地后必须 8/8 PASS
+python3 tests/sensitivity.py           # 5. margin 降幅 ≤1 为绿灯
+```
+
+完整规则与落地记录格式见 `references/model_calibration_runbook.md`；历次落地证据在 `references/calibration.md` §7-§8。
 
 ---
 

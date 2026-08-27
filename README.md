@@ -72,6 +72,7 @@ python3 tests/test_events.py --list     # 查看锚点清单
 python3 tests/test_events.py            # 运行全部锚点测试
 python3 tests/test_events.py --build    # 重建 fixtures（需 akshare + 网络，约5-10分钟）
 python3 tests/sensitivity.py           # 权重敏感性扫描（可行域与分离边际）
+python3 scripts/calibrate.py report    # sprob/vprob 分位数校准报告 → references/calibration.md
 ```
 
 锚点集（4 正 + 4 负）：正锚点为 2023-10（汇金首次公告买入 ETF）、2024-02（扩大增持范围至中小盘）、2025-04（盘中公告增持）、2026-07（单周净申购 2036 亿创纪录）；负锚点为 2019-01 / 2021-04 / 2023-02 / 2026-08 四个数据驱动挑选的平静周。**期望值来自公开事实而非模型调参**——正锚点失败时应先调查（数据源差异/模型盲区），而不是放宽期望。

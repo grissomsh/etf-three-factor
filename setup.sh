@@ -25,7 +25,8 @@ echo "✅ 工作区:   $WORKSPACE_DIR"
 # 2. 复制脚本 (跳过 v6 遗留版本)
 cp "$SCRIPT_DIR/scripts/etf_threefactor.py" "$SCRIPTS_DIR/"
 cp "$SCRIPT_DIR/scripts/etf_data_store.py" "$SCRIPTS_DIR/"
-echo "✅ 脚本已复制: etf_threefactor.py + etf_data_store.py"
+cp "$SCRIPT_DIR/scripts/calibrate.py" "$SCRIPTS_DIR/"
+echo "✅ 脚本已复制: etf_threefactor.py + etf_data_store.py + calibrate.py"
 
 # 3. Python 环境 + akshare
 if ! command -v python3 >/dev/null 2>&1; then

@@ -21,12 +21,16 @@ python3 scripts/etf_threefactor.py --query --days 7 [--code 510300]  # query sig
 bash setup.sh                                          # one-shot deploy: dirs, copy scripts, install akshare
 python3 tests/test_events.py                           # event-anchor regression tests (offline fixtures; --list/--build)
 python3 tests/sensitivity.py                           # factor-weight simplex scan over those fixtures (--step/--top)
+python3 scripts/calibrate.py fetch|vr|report|gate     # quantile calibration (dataset cached in tests/data/calib/) + report + candidate-mapping gate
 ```
+
+Any change to model constants (factor mappings / weights / thresholds) MUST follow `references/model_calibration_runbook.md`: calibrate report → gate variant offline → land only after test_events 8/8 + sensitivity margin drop ≤1 → append a dated landing record to references/calibration.md. Anchor expectations come from public facts and are never loosened to make a variant pass.
 
 - Only external dependency: akshare (everything else is stdlib).
 - `scripts/etf_data_store.py` also runs standalone to print DB stats.
 - Verify model changes with `tests/test_events.py` — offline fixtures built from real national-team buying events: 4 positive anchors (2023-10 first announcement, 2024-02 scope expansion, 2025-04 intraday announcement, 2026-07 record week) + 4 data-driven calm-week negative anchors (2019-01, 2021-04, 2023-02, 2026-08). Expectations come from public facts: investigate failures (source drift / model blind spot) instead of loosening them. Rebuild fixtures with `--build [--anchor id]` (needs network; each anchor sweeps ~65 SSE share queries).
-- `tests/sensitivity.py` scans the factor-weight simplex over those fixtures (feasibility boundary + separation margin). Known finding at 8 windows: baseline (0.5/0.2/0.3) is feasible and sits near the top of the margin ranking (+11.9), squeezed between two opposite constraints — lowering w_vol below 0.5 (or shrinking w_dir) trips neg-2021-04 (late-stage bubble-era broad share drift scores one ETF ≥70), while raising w_dir to 0.25 trips ev-2026-07. Don't touch weights without new event anchors.
+- `tests/sensitivity.py` scans the factor-weight simplex over those fixtures (feasibility boundary + separation margin). Known finding at 8 windows: baseline (0.5/0.2/0.3) is feasible and sits near the top of the margin ranking (+11.4 after the VAR-C sprob landing), squeezed between two opposite constraints — lowering w_vol below 0.5 (or shrinking w_dir) trips neg-2021-04 (late-stage bubble-era broad share drift scores one ETF ≥70), while raising w_dir to 0.25 trips ev-2026-07. Don't touch weights without new event anchors.
+- `scripts/calibrate.py` builds the full-market share-Δ% dataset (SSE daily 2020+, SZSE ≥2024 in ~half-year chunks; resume-safe, cached as gzip CSV **inside the repo** at `tests/data/calib/`), generates `references/calibration.md`, and has a `gate` subcommand that offline-tests candidate sprob mappings against the fixtures without touching main code. The VAR-C mapping (2026-08-27) was adopted through that gate — see calibration.md §8 for definition and gate results.
 - Smoke-test report/pipeline changes by running the pipeline and reading the per-ETF summary lines (信号分 value, 三因子/二因子 model flag).
 - **On this machine**: Homebrew Python 3.14 is PEP 668-externally-managed, so `pip3 install akshare` fails. setup.sh falls back to a venv at `~/.etf-skill/venv` (installed via the Aliyun PyPI mirror) — run scripts with `~/.etf-skill/venv/bin/python`.
 
