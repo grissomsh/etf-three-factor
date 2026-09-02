@@ -84,9 +84,19 @@ def fetch(code, limit=60):
             d = json.loads(resp.read().decode("utf-8"))
         k = d.get("data", {}).get(f"{pfx}{numcode}", {}).get("day", []) or \
             d.get("data", {}).get(f"{pfx}{numcode}", {}).get("qfqday", [])
-        return [{"date": r[0], "o": float(r[1]), "c": float(r[2]),
-                 "h": float(r[3]), "l": float(r[4]), "v": float(r[5])} for r in k if len(r) >= 6 and r[0]]
-    except:
+        bars = [{"date": r[0], "o": float(r[1]), "c": float(r[2]),
+                 "h": float(r[3]), "l": float(r[4]), "v": float(r[5])}
+                for r in k if len(r) >= 6 and r[0]]
+        if bars:
+            return bars
+    except Exception:
+        pass
+    # 腾讯接口失败/空 → 回退到本地 klines_raw 存量 (静默降级, 与项目一贯风格一致)
+    # klines_raw 以裸代码存储(如 "510300"/"sh000300" 保留前缀), 故用原始入参查
+    try:
+        from etf_data_store import ETFDataStore
+        return ETFDataStore().get_klines(code) or []
+    except Exception:
         return []
 
 
@@ -1011,6 +1021,8 @@ def main(target_date=None, record_only=False):
     idx_300 = fetch("sh000300", 60)
     if idx_300:
         print(f"  ✅ {len(idx_300)}条  {idx_300[-1]['date']}~{idx_300[0]['date']}")
+        if store:
+            store.upsert_klines("sh000300", idx_300)  # 指数也入库, 供K线回退时方向分可用
 
     # 2. 加载历史份额数据（优先DB shares_raw 全量, 其次JSON, 再akshare回溯）
     print("\n📊 Step 2: 加载历史份额数据...")
@@ -1070,7 +1082,7 @@ def main(target_date=None, record_only=False):
         today_str = datetime.now().strftime("%Y-%m-%d")
         print(f"  📡 采集 {today_str} 实时份额数据...")
         shares_collected = 0
-        stale_dates = set()
+        stale_dates, stale_codes = set(), []
         for code, info in ETFS.items():
             sh_data = fetch_fund_shares(code)
             if sh_data:
@@ -1087,13 +1099,13 @@ def main(target_date=None, record_only=False):
                 print(f"    ✅ {code} {info['n'][:12]}: {sh_data['shares_yi']:.1f}亿份 (数据日 {d_date})")
                 shares_collected += 1
                 if d_date != today_str:
-                    stale_dates.add(d_date)
+                    stale_dates.add(d_date); stale_codes.append(code)
             else:
                 print(f"    ⚠️ {code} {info['n'][:12]}: 份额数据暂未发布")
         if shares_collected == 0:
             print("  ⚠️ 盘中运行：当日份额未发布(盘后约19:00)，今日信号退化为二因子，建议19:30后重跑")
         elif stale_dates:
-            print(f"  ⚠️ 份额数据为最近发布日(盘中为{max(stale_dates)})，今日无当日份额，今日信号退化为二因子")
+            print(f"  ⚠️ 部分ETF份额仍为{max(stale_dates)}（{' '.join(stale_codes)}），仅这几只退化为二因子；其余使用当日份额")
         _persist_shares(store, shares_history)
     elif store and target_date:
         # 指定日期：尝试从akshare获取该日的份额数据

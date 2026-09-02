@@ -30,15 +30,15 @@ python3 etf_threefactor.py
 
 ### 分功能调用
 
-| 功能           | 命令                                           | 说明                |
-| -------------- | ---------------------------------------------- | ------------------- |
-| 完整分析       | `python3 etf_threefactor.py`                   | 一键全流程          |
-| 分析特定日期   | `python3 etf_threefactor.py --date 2026-04-30` | 历史回溯分析        |
-| 仅采集份额入库 | `python3 etf_threefactor.py --record`          | 只记录不含分析      |
-| 查看数据库状态 | `python3 etf_threefactor.py --stats`           | 统计信息            |
-| 健康检查       | `python3 etf_threefactor.py --healthcheck`     | 环境自检(数据源/DB) |
-| 完整回溯       | `python3 etf_threefactor.py --backfill`        | 一次性补满份额历史  |
-| 信号查询       | `python3 etf_threefactor.py --query --days 7`  | 从DB查历史信号      |
+| 功能            | 命令                                                | 说明                              |
+| --------------- | --------------------------------------------------- | --------------------------------- |
+| 完整分析        | `python3 etf_threefactor.py`                        | 一键全流程                        |
+| 分析特定日期    | `python3 etf_threefactor.py --date 2026-04-30`      | 历史回溯分析                      |
+| 仅采集份额入库  | `python3 etf_threefactor.py --record`               | 只记录不含分析                    |
+| 查看数据库状态  | `python3 etf_threefactor.py --stats`                | 统计信息                          |
+| 健康检查        | `python3 etf_threefactor.py --healthcheck`          | 环境自检(数据源/DB)               |
+| 完整回溯        | `python3 etf_threefactor.py --backfill`             | 一次性补满份额历史                |
+| 信号查询        | `python3 etf_threefactor.py --query --days 7`       | 从DB查历史信号                    |
 | 临时分析其他ETF | `python3 etf_threefactor.py --etf "515880:通信ETF"` | 不进默认池；行业ETF信号需自行打折 |
 
 ---
